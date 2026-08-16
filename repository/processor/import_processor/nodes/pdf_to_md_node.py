@@ -109,6 +109,10 @@ class PdfToMdNode(BaseNode):
             str(import_file_path_obj),
             "-o",
             str(file_dir_obj),
+            "-b",
+            "pipeline",
+            "-f",
+            "False",
             "--source",
             "local"
         ]
@@ -152,7 +156,7 @@ class PdfToMdNode(BaseNode):
 
         file_name = import_file_path_obj.stem
 
-        return str(file_dir_obj / file_name / "hybrid_auto" / f"{file_name}.md")
+        return str(file_dir_obj / file_name / "auto" / f"{file_name}.md")
 
 if __name__ == '__main__':
     setup_logging()
