@@ -526,7 +526,7 @@ class _ImageUploader:
 
         return pattern.sub(replacer, md_content)
 
-class _MarkDownToImgNode(BaseNode):
+class MarkDownToImgNode(BaseNode):
     """
     主要职责：分别调用抽取设计的四个类对应方法
 
@@ -582,7 +582,7 @@ class _MarkDownToImgNode(BaseNode):
 
 if __name__ == '__main__':
     setup_logging()
-    md_img_node = _MarkDownToImgNode()
+    md_img_node = MarkDownToImgNode()
     init_state = {
         "md_path": r"D:\Project\llm-project\RAG_repository\repository\processor\import_processor\temp\万用表RS-12的使用\auto\万用表RS-12的使用.md"
     }
