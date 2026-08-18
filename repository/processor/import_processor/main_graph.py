@@ -18,10 +18,10 @@ from repository.processor.import_processor.base import setup_logging
 from repository.processor.import_processor.nodes.pdf_to_md_node import PdfToMdNode
 from repository.processor.import_processor.nodes.entry_node import EntryNode
 from repository.processor.import_processor.nodes.md_to_img_node import MarkDownToImgNode
-# from repository.processor.import_processor.nodes.document_split_node import DocumentSplitNode
-# from repository.processor.import_processor.nodes.item_name_recognition_node import ItemNameRecognitionNode
-# from repository.processor.import_processor.nodes.embedding_chunks_node import EmbeddingChunksNode
-# from repository.processor.import_processor.nodes.import_milvus_node import ImportMilvusNode
+from repository.processor.import_processor.nodes.document_split_node import DocumentSplitNode
+from repository.processor.import_processor.nodes.item_name_recognition_node import ItemNameRecognitionNode
+from repository.processor.import_processor.nodes.embedding_chunks_node import EmbeddingChunksNode
+from repository.processor.import_processor.nodes.import_milvus_node import ImportMilvusNode
 
 
 def import_router(state: ImportGraphState):
@@ -60,10 +60,10 @@ def import_graph() -> CompiledStateGraph:
         "entry_node": EntryNode(),
         "pdf_to_md_node": PdfToMdNode(),
         "md_to_img_node": MarkDownToImgNode(),
-        # "document_split_node": DocumentSplitNode(),
-        # "item_name_recognition_node": ItemNameRecognitionNode(),
-        # "embedding_chunks_node": EmbeddingChunksNode(),
-        # "import_milvus_node": ImportMilvusNode()
+        "document_split_node": DocumentSplitNode(),
+        "item_name_recognition_node": ItemNameRecognitionNode(),
+        "embedding_chunks_node": EmbeddingChunksNode(),
+        "import_milvus_node": ImportMilvusNode()
     }
 
     # 4. 遍历映射表添加
@@ -81,11 +81,11 @@ def import_graph() -> CompiledStateGraph:
     # 5.2 定义业务边
     work_flow.add_edge("pdf_to_md_node", "md_to_img_node")
     work_flow.add_edge("md_to_img_node", END)
-    # work_flow.add_edge("md_to_img_node", "document_split_node")
-    # work_flow.add_edge("document_split_node", "item_name_recognition_node")
-    # work_flow.add_edge("item_name_recognition_node", "embedding_chunks_node")
-    # work_flow.add_edge("embedding_chunks_node", "import_milvus_node")
-    # work_flow.add_edge("import_milvus_node", END)
+    work_flow.add_edge("md_to_img_node", "document_split_node")
+    work_flow.add_edge("document_split_node", "item_name_recognition_node")
+    work_flow.add_edge("item_name_recognition_node", "embedding_chunks_node")
+    work_flow.add_edge("embedding_chunks_node", "import_milvus_node")
+    work_flow.add_edge("import_milvus_node", END)
 
 
     # 5.3 编译
