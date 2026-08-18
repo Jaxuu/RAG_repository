@@ -27,6 +27,7 @@ class StorageClients(BaseClientManager):
     _mongo_db: Optional[Database] = None
     _mongo_lock = threading.Lock()
 
+
     # ── MinIO ──
 
     @classmethod
@@ -58,7 +59,9 @@ class StorageClients(BaseClientManager):
             logger.error(f"MinIO 客户端创建失败: {e}")
             raise ConnectionError(f"MinIO 连接失败: {e}") from e
 
+
     # ── Milvus ──
+
     @classmethod
     def get_milvus_client(cls) -> MilvusClient:
         return cls._get_or_create("_milvus_client", cls._milvus_lock, cls._create_milvus_client)
@@ -67,9 +70,9 @@ class StorageClients(BaseClientManager):
     def _create_milvus_client(cls) -> MilvusClient:
         try:
 
-            milvus_uri = cls._require_env('MILVUS_URL')
+            milvus_url = cls._require_env('MILVUS_URL')
 
-            milvus_client = MilvusClient(uri=milvus_uri)
+            milvus_client = MilvusClient(url=milvus_url)
 
             return milvus_client
 

@@ -52,7 +52,9 @@ class AIClients(BaseClientManager):
             logger.error(f"OpenAI 客户端创建失败: {e}")
             raise ConnectionError(f"OpenAI 连接失败: {e}") from e
 
+
     # ── LLM ──
+
     @classmethod
     def get_llm_client(cls, response_format: bool = True) -> ChatOpenAI:
         if response_format:
@@ -61,8 +63,6 @@ class AIClients(BaseClientManager):
         else:
             return cls._get_or_create("_openai_llm_text_client", cls._openai_llm_response_text_lock,
                                       lambda: cls._create_llm_client(response_format))
-
-            # ── LLM ──
 
     @classmethod
     def _create_llm_client(cls, response_format) -> ChatOpenAI:
@@ -90,7 +90,9 @@ class AIClients(BaseClientManager):
         except Exception as e:
             raise ConnectionError(f"OpenAI 连接失败: {e}") from e
 
+
     # ── BGE-M3嵌入模型客户端 ──
+
     @classmethod
     def get_bge_m3_client(cls):
         return cls._get_or_create("_bge_m3_client", cls._bge_m3_lock, cls._create_bge_m3_client)
@@ -122,7 +124,9 @@ class AIClients(BaseClientManager):
         except Exception as e:
             raise ConnectionError(f"BGE_M3嵌入模型客户端创建失败: {e}") from e
 
+
     # ── BGE-M3重排序模型客户端 ──
+
     @classmethod
     def get_bge_m3_rerank_client(cls):
         return cls._get_or_create("_bge_m3_rerank_client",
@@ -159,16 +163,18 @@ class AIClients(BaseClientManager):
 
 
 if __name__ == '__main__':
-    # llm_client: ChatOpenAI = AIClients.get_llm_client()
+    # llm_client: ChatOpenAI = AIClients.get_llm_client(False)
     #
     # llm_response = llm_client.invoke("请您给我讲一个笑话，要求输出格式是一个json")
     #
     # llm_result = llm_response.content
     #
+    # print(llm_result)
+
     # import json
     #
     # result = json.loads(llm_result)
     #
     # print(result)
-    #
+
     print(AIClients.get_bge_m3_rerank_client())
