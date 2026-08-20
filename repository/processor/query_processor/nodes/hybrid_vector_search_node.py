@@ -91,7 +91,7 @@ if __name__ == '__main__':
 
     state = {
         "rewritten_query": "万用表如何测量电阻",
-        "item_names": ["RS-12 数字万用表"]  # 没用的
+        "item_names": ["RS PRO RS-12 数字万用表"]  # 没用的
     }
 
     vector_search = HybridVectorSearch()
