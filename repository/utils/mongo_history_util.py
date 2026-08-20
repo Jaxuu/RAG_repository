@@ -5,7 +5,7 @@ from bson import ObjectId
 from pymongo.collection import Collection
 from pymongo import DESCENDING
 
-from knowledge.utils.client.storage_clients import StorageClients
+from repository.utils.client.storage_clients import StorageClients
 
 logger = logging.getLogger(__name__)
 
