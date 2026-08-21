@@ -7,7 +7,7 @@ from repository.utils.client.storage_clients import StorageClients
 from repository.utils.embedding_util import generate_bge_m3_hybrid_vectors
 from repository.utils.milvus_util import create_hybrid_search_requests, execute_hybrid_search_query, _item_names_filter
 
-class HybridVectorSearch(BaseNode):
+class HybridVectorSearchNode(BaseNode):
     name = "hybrid_vector_search_node"
 
     def process(self, state: QueryGraphState) -> Union[QueryGraphState,Dict[str,Any]]:
@@ -94,7 +94,7 @@ if __name__ == '__main__':
         "item_names": ["RS PRO RS-12 数字万用表"]  # 没用的
     }
 
-    vector_search = HybridVectorSearch()
+    vector_search = HybridVectorSearchNode()
     result = vector_search.process(state)
 
     for r in result.get('embedding_chunks'):
