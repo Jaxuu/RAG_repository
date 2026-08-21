@@ -27,6 +27,11 @@ class QueryConfig:
     rerank_min_top_k: int = field(
         default_factory=lambda: int(os.getenv("RERANK_MIN_TOP_K", "3"))
     )
+    # 断崖阈值起作用的最低gap值
+    rerank_gap_threshold: float = field(
+        default_factory=lambda: float(os.getenv("RERANK_GAP_THRESHOLD", "0.15"))
+    )
+    # 这两个是绝对和相对的gap阈值，暂时没用
     rerank_gap_ratio: float = field(
         default_factory=lambda: float(os.getenv("RERANK_GAP_RATIO", "0.25"))
     )
