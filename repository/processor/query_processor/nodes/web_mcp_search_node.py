@@ -8,6 +8,21 @@ from repository.processor.query_processor.base import BaseNode, T
 from repository.processor.query_processor.state import QueryGraphState
 from repository.processor.query_processor.exceptions import StateFieldError
 
+"""
+MCPServerStreamableHttp
+        ↓
+OpenAI Agents SDK 帮你创建 MCP Client
+        ↓
+调用 mcp Python SDK
+        ↓
+建立 Streamable HTTP
+        ↓
+发送 MCP tools/call
+        ↓   
+DashScope MCP Server
+        ↓
+bailian_web_search
+"""
 
 class WebMcpSearchNode(BaseNode):
     name = "web_mcp_search_node"
