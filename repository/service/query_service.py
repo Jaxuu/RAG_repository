@@ -63,7 +63,7 @@ class QueryService:
         answer = get_task_result(task_id=task_id, key="answer")
         return answer
 
-    def get_history(self, session_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_history(self, session_id: str, limit: int = 10) -> List[Dict[str, Any]]:
 
         # 1. 根据session_id获取最近的指定条数的历史对话
         records = get_recent_messages(session_id, limit=limit)

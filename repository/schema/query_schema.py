@@ -3,7 +3,6 @@
 from typing import Optional, List
 from pydantic import BaseModel, Field
 
-
 class QueryRequest(BaseModel):
     query: str = Field(..., description="查询内容")
     session_id: Optional[str] = Field(None, description="会话ID，不传则自动生成")

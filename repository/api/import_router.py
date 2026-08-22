@@ -56,7 +56,7 @@ def register_router(app: FastAPI):
         return {"flag": "success"}
 
     # 1. 上传请求
-    @app.post("/upload", response_model=UploadResponse)
+    @app.post("/upload", response_model=UploadResponse)     # response_model用来做Pydantic校验
     def upload_endpoint(file: UploadFile,
                         background_tasks: BackgroundTasks
                         , upload_service: UpLoadService = Depends(get_upload_file_service)):
