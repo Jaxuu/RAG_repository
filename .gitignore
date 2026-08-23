@@ -5,3 +5,4 @@ __pycache__/
 .env
 temp/
 temp/data/
+docs/

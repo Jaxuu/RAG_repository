@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0" />
-  <title>商品信息客服</title>
+  <title>工业仪器与设备智能运维助手</title>
   <style>
     :root{
       --bg:#0f172a;
@@ -35,7 +35,8 @@
       padding:18px;
     }
     .app{
-      width:100%;
+      flex:1 1 auto;
+      min-width:0;
       max-width:980px;
       height:min(820px, 92vh);
       background:var(--panel);
@@ -48,6 +49,93 @@
       display:flex;
       flex-direction:column;
     }
+
+    .layout{
+      display:flex;
+      gap:16px;
+      align-items:stretch;
+      width:100%;
+      max-width:1216px;
+    }
+    .outline{
+      flex:0 0 220px;
+      display:flex;
+      flex-direction:column;
+      background:var(--panel);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border:1px solid var(--border);
+      border-radius:16px;
+      box-shadow:var(--shadow);
+      overflow:hidden;
+    }
+    .outline-head{
+      padding:14px 16px;
+      border-bottom:1px solid var(--border);
+      font-size:13px;
+      color:var(--muted);
+      background:rgba(15, 23, 42, 0.5);
+    }
+    .outline-list{
+      flex:1;
+      overflow-y:auto;
+      padding:8px;
+      display:flex;
+      flex-direction:column;
+      gap:4px;
+    }
+    .outline-item{
+      display:flex;
+      gap:8px;
+      align-items:flex-start;
+      width:100%;
+      margin:0;
+      text-align:left;
+      border:none;
+      border-left:2px solid transparent;
+      border-radius:8px;
+      padding:8px 10px;
+      background:transparent;
+      color:var(--muted);
+      font-size:12.5px;
+      line-height:1.4;
+      font-family:inherit;
+      cursor:pointer;
+      appearance:none;
+      -webkit-appearance:none;
+      transition: background .15s, color .15s, border-color .15s;
+    }
+    .outline-item:hover{ background:rgba(255, 255, 255, 0.04); color:var(--text); }
+    .outline-item:focus-visible{ outline:2px solid rgba(56, 189, 248, 0.5); outline-offset:1px; }
+    .outline-item.active{
+      border-left-color:var(--brand);
+      background:rgba(56, 189, 248, 0.10);
+      color:var(--text);
+    }
+    .outline-idx{
+      flex:0 0 auto;
+      min-width:18px;
+      font-size:11px;
+      color:var(--brand);
+      font-variant-numeric: tabular-nums;
+    }
+    .outline-text{
+      flex:1;
+      min-width:0;
+      word-break:break-word;
+    }
+    .outline-empty{
+      color:var(--muted);
+      font-size:12px;
+      padding:12px;
+      text-align:center;
+    }
+
+    @media (max-width:1260px){
+      .outline{ display:none; }
+      .layout{ max-width:980px; }
+    }
+
     .topbar{
       display:flex;
       align-items:center;
@@ -138,7 +226,7 @@
     }
     .avatar.bot{background:linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(129, 140, 248, 0.2))}
     .bubble{
-      max-width:min(720px, 76%);
+      max-width:min(720px, 80%);
       display:inline-block;
       border-radius:14px;
       padding:10px 12px;
@@ -270,13 +358,18 @@
   </style>
 </head>
 <body>
+  <div class="layout">
+    <aside class="outline" id="outline">
+      <div class="outline-head">🗂 问题大纲</div>
+      <div class="outline-list"></div>
+    </aside>
   <div class="app">
     <div class="topbar">
       <div class="brand">
         <div class="logo"></div>
         <div class="title">
-          <strong>商品信息客服</strong>
-          <span id="subTitle">在线 · 可查询知识库与联网信息</span>
+          <strong>工业仪器与设备智能运维助手</strong>
+          <span id="subTitle">在线 · 支持设备技术规格/接线图表/故障诊断与联网信息查询</span>
         </div>
       </div>
       <div class="top-actions">
@@ -292,17 +385,18 @@
       <div class="msg bot">
         <div class="avatar bot">客服</div>
         <div>
-          <div class="bubble">你好，我是商品信息库客服。你可以提问商品相关问题，我会在“阶段进度”里展示处理过程。</div>
-          <div class="meta">提示：可以问“如何使用万用表测量电压？”</div>
+          <div class="bubble">你好，我是工业仪器与设备智能运维助手。你可以输入设备型号并咨询技术规格、接线引脚或故障排查方案。</div>
+          <div class="meta">示例：“Fluke 17B+ 测量直流电压的最大量程和输入阻抗是多少？”</div>
         </div>
       </div>
     </div>
 
     <div class="composer">
-      <textarea id="input" placeholder="请输入问题（Enter 发送，Shift+Enter 换行）"></textarea>
+      <textarea id="input" placeholder="请输入工业设备型号或运维问题 (Enter 发送，Shift+Enter 换行)"></textarea>
       <button class="send" id="send">发送</button>
     </div>
     <div class="hint">快捷键：<span class="kbd">Enter</span> 发送，<span class="kbd">Shift</span>+<span class="kbd">Enter</span> 换行</div>
+  </div>
   </div>
 
   <script>
@@ -730,6 +824,7 @@
       if(!text) return;
       inputEl.value = '';
       addUserMsg(text);
+      syncOutline();
       const botMsgEl = addBotMsgSkeleton();
       sendBtn.disabled = true;
 
@@ -863,6 +958,71 @@
       }
     }
 
+    // ===== 左侧问题大纲（Message Outline / Scroll Spy） =====
+    const outlineList = document.querySelector('#outline .outline-list');
+    const TRUNC = 18;
+    const summarize = (t) => {
+      const s = String(t || '').replace(/\s+/g, ' ').trim();
+      const a = [...s];
+      return a.length > TRUNC ? a.slice(0, TRUNC).join('') + '…' : s;
+    };
+
+    let activeIdx = -1;
+    function setActive(i){
+      if(activeIdx === i) return;
+      activeIdx = i;
+      outlineList.querySelectorAll('.outline-item').forEach((it, k) => it.classList.toggle('active', k === i));
+    }
+
+    const intersecting = new Set();
+    const spyObserver = new IntersectionObserver((entries) => {
+      for(const e of entries){
+        if(e.isIntersecting) intersecting.add(e.target);
+        else intersecting.delete(e.target);
+      }
+      let topEl = null, topY = Infinity;
+      for(const el of intersecting){
+        const r = el.getBoundingClientRect();
+        if(r.top < topY){ topY = r.top; topEl = el; }
+      }
+      if(topEl) setActive(Number(topEl.dataset.outlineIdx));
+    }, { root: chatEl, rootMargin: '0px 0px -65% 0px', threshold: 0 });
+
+    // 滚到底部时兜底高亮最后一问（最后一问可能进不了顶部判定带）
+    chatEl.addEventListener('scroll', () => {
+      const n = chatEl.querySelectorAll('.msg.user').length;
+      if(n && chatEl.scrollTop + chatEl.clientHeight >= chatEl.scrollHeight - 4) setActive(n - 1);
+    }, { passive: true });
+
+    function syncOutline(){
+      spyObserver.disconnect();
+      intersecting.clear();
+      activeIdx = -1;
+      const userMsgs = Array.from(chatEl.querySelectorAll('.msg.user'));
+      outlineList.textContent = '';
+      if(userMsgs.length === 0){
+        outlineList.innerHTML = '<div class="outline-empty">暂无问题</div>';
+        return;
+      }
+      userMsgs.forEach((el, i) => {
+        el.dataset.outlineIdx = String(i);
+        const bubbleEl = el.querySelector('.bubble');
+        const text = bubbleEl ? bubbleEl.textContent : '';
+        const item = document.createElement('button');
+        item.className = 'outline-item';
+        item.type = 'button';
+        item.innerHTML = `<span class="outline-idx">${i + 1}</span><span class="outline-text">${escapeHtml(summarize(text))}</span>`;
+        item.addEventListener('click', () => {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+        outlineList.appendChild(item);
+        spyObserver.observe(el);
+      });
+      // 若当前已在底部（如刚发送新消息或加载历史后），直接高亮最后一问
+      const n = userMsgs.length;
+      if(chatEl.scrollTop + chatEl.clientHeight >= chatEl.scrollHeight - 4) setActive(n - 1);
+    }
+
     sendBtn.addEventListener('click', onSend);
     inputEl.addEventListener('keydown', (e) => {
       if(e.key === 'Enter' && !e.shiftKey){
@@ -888,9 +1048,10 @@
       const nodes = Array.from(chatEl.querySelectorAll('.msg'));
       for(let i=1;i<nodes.length;i++) nodes[i].remove();
       scrollToBottom();
+      syncOutline();
     });
 
-    loadHistory();
+    loadHistory().finally(() => syncOutline());
     setTimeout(() => inputEl.focus(), 200);
   </script>
 </body>

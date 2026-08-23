@@ -409,6 +409,17 @@ class _VLMSummarizer:
             max_requests: int,
             window: int = 60,
     ):
+        """
+        负责：确保在指定时间窗口内，最多只有max_requests(15)个请求被发送到VLM模型
+
+        Args:
+            timestamps:  请求时间戳队列
+            max_requests: 最大请求数
+            window: 时间窗口（秒）
+
+        Returns:
+
+        """
         now = time.time()
         while timestamps and now - timestamps[0] >= window:
             timestamps.popleft()

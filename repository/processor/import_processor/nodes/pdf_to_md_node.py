@@ -149,7 +149,7 @@ class PdfToMdNode(BaseNode):
         :param import_file_path_obj:
         :param file_dir_obj:
         :return:
-        md_path= D:\develop\develop\workspace\temp_dir\万用表的使用\hybrid_auto\万用表的使用.md
+        md_path= D:\Project\llm-project\RAG_repository\repository\temp_data\20260823\e5bd3181\奥托尼克斯 接近传感器 PR12-4DN 规格书\auto\奥托尼克斯 接近传感器 PR12-4DN 规格书.md
 
         Path:吉祥三包：name:全名[文件名字.后缀]   stem【文件名字，没有后缀】    suffix【文件的后缀】
         """

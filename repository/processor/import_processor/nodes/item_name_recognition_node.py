@@ -36,7 +36,7 @@ class ItemNameRecognitionNode(BaseNode):
         # 3. 调用LLM模型 提取商品名
         item_name = self._recognition_item_name(item_name_context, file_title)
 
-        # 4. 向量化(嵌入模型：1.OpenAIEmbedding(OpenAI) 2.文本嵌入模型（text-embedding-v(x))（灵积服务平台：dashscope） 3.bge(bge-m3))：混合向量[稠密：相似性匹配、稀疏：精确匹配]
+        # 4. 向量化(嵌入模型：bge(bge-m3))：混合向量[稠密：相似性匹配、稀疏：精确匹配]
         dense_vector, sparse_vector = self._embedding_item_name(item_name)
 
         # 5. 入库
