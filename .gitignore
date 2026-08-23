@@ -6,3 +6,4 @@ __pycache__/
 temp/
 temp/data/
 docs/
+*.md

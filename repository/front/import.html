@@ -376,6 +376,76 @@
                 transform: rotate(360deg);
             }
         }
+
+        /* Queue Progress Section Styles */
+        .queue-progress {
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.8), rgba(30, 41, 59, 0.6));
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+        }
+
+        .queue-progress-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+
+        #queueStatusText {
+            color: #e2e8f0;
+            font-size: 15px;
+        }
+
+        #queueProgressText {
+            color: #67e8f9;
+            font-size: 16px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .queue-progress-bar-container {
+            width: 100%;
+            height: 8px;
+            background: rgba(15, 23, 42, 0.8);
+            border-radius: 4px;
+            overflow: hidden;
+            box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+        }
+
+        .queue-progress-bar {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #3b82f6, #60a5fa);
+            border-radius: 4px;
+            transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+        }
+
+        .queue-progress-bar::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            background: linear-gradient(
+                90deg,
+                rgba(255, 255, 255, 0) 0%,
+                rgba(255, 255, 255, 0.3) 50%,
+                rgba(255, 255, 255, 0) 100%
+            );
+            animation: shimmer 2s infinite;
+        }
+
+        /* Disabled state for upload area */
+        .upload-area.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
     </style>
 </head>
 <body>
@@ -383,10 +453,21 @@
 <div class="container">
     <h1>📄 知识库文件导入</h1>
 
+    <!-- Overall queue progress indicator -->
+    <div id="queueProgress" class="queue-progress" style="display: none;">
+        <div class="queue-progress-header">
+            <span id="queueStatusText">准备处理文件...</span>
+            <span id="queueProgressText">0/0</span>
+        </div>
+        <div class="queue-progress-bar-container">
+            <div class="queue-progress-bar" id="queueProgressBar"></div>
+        </div>
+    </div>
+
     <div class="upload-area" id="dropZone" onclick="document.getElementById('fileInput').click()">
         <div class="upload-icon">☁️</div>
         <div class="upload-text">点击或拖拽文件到此处 (PDF/MD)</div>
-        <input type="file" id="fileInput" class="file-input"  accept=".pdf,.md">
+        <input type="file" id="fileInput" class="file-input"  accept=".pdf,.md" multiple>
     </div>
 
     <div id="fileList" class="file-list">
@@ -400,6 +481,21 @@
 
     // 模拟后端API地址
     const API_BASE = 'http://127.0.0.1:8000';
+
+    // Queue state management
+    const QueueState = {
+        files: [],           // Array of File objects
+        currentIndex: 0,     // Current file being processed
+        isProcessing: false, // Whether queue is actively processing
+        completedCount: 0,   // Number of successfully completed files
+        failedCount: 0       // Number of failed files
+    };
+
+    // UI element references for queue progress
+    const queueProgressEl = document.getElementById('queueProgress');
+    const queueStatusTextEl = document.getElementById('queueStatusText');
+    const queueProgressTextEl = document.getElementById('queueProgressText');
+    const queueProgressBarEl = document.getElementById('queueProgressBar');
 
     dropZone.addEventListener('dragover', (e) => {
         e.preventDefault();
@@ -424,8 +520,62 @@
         handleFiles(e.target.files);
     });
 
-    function handleFiles(files) {
-        Array.from(files).forEach(uploadFile);
+    async function handleFiles(files) {
+        const fileArray = Array.from(files);
+
+        if (fileArray.length === 0) return;
+
+        // Add files to queue
+        QueueState.files.push(...fileArray);
+
+        // If not currently processing, start the queue
+        if (!QueueState.isProcessing) {
+            await processQueue();
+        }
+    }
+
+    async function processQueue() {
+        QueueState.isProcessing = true;
+        const totalFiles = QueueState.files.length;
+
+        // Show queue progress UI
+        queueProgressEl.style.display = 'block';
+        updateQueueProgressUI();
+
+        // Disable upload area during processing
+        dropZone.classList.add('disabled');
+        fileInput.disabled = true;
+
+        // Process files sequentially
+        for (const file of QueueState.files) {
+            const fileIndex = QueueState.currentIndex;
+            const fileNumber = fileIndex + 1;
+
+            // Update queue status text
+            queueStatusTextEl.textContent = `正在处理 [${fileNumber}/${totalFiles}]: ${file.name}`;
+
+            try {
+                // Wait for this file to complete (success or failure)
+                await uploadFileSequential(file, fileNumber, totalFiles);
+
+                // File completed successfully
+                QueueState.completedCount++;
+            } catch (error) {
+                // File failed, but continue to next
+                console.error(`File ${file.name} failed:`, error);
+                QueueState.failedCount++;
+
+                // Show error in queue status for a moment
+                queueStatusTextEl.textContent = `[${fileNumber}/${totalFiles}] ${file.name} 处理失败，继续下一个...`;
+            }
+
+            // Update overall progress
+            QueueState.currentIndex++;
+            updateQueueProgressUI();
+        }
+
+        // All files processed
+        await finishQueue(totalFiles);
     }
 
     function updateProgressUI(wrapper, percentage) {
@@ -446,14 +596,15 @@
         }
     }
 
-    async function uploadFile(file) {
-        // === 核心逻辑优化：动态判断总节点数 ===
-        const isPDF = file.name.toLowerCase().endsWith('.pdf');
-        // PDF 需要 9 步（含上传），MD 跳过 pdf_to_md 需要 8 步
-        const totalNodes = isPDF ? 8 : 7;
+    function uploadFileSequential(file, fileNumber, totalFiles) {
+        return new Promise((resolve, reject) => {
+            // === 核心逻辑优化：动态判断总节点数 ===
+            const isPDF = file.name.toLowerCase().endsWith('.pdf');
+            // PDF 需要 9 步（含上传），MD 跳过 pdf_to_md 需要 8 步
+            const totalNodes = isPDF ? 8 : 7;
 
-        const id = 'file-' + Math.random().toString(36).substr(2, 8);
-        const html = `
+            const id = 'file-' + Math.random().toString(36).substr(2, 8);
+            const html = `
             <div class="file-item" id="${id}">
                 <div class="file-info">
                     <div class="file-header">
@@ -474,20 +625,18 @@
                 <div class="status-badge status-uploading">上传中...</div>
             </div>
         `;
-        fileList.insertAdjacentHTML('afterbegin', html);
+            fileList.insertAdjacentHTML('afterbegin', html);
 
-        const itemEl = document.getElementById(id);
-        const statusBadge = itemEl.querySelector('.status-badge');
-        const progressWrapper = itemEl.querySelector('.progress-wrapper');
-        const logListEl = itemEl.querySelector('.log-list');
+            const itemEl = document.getElementById(id);
+            const statusBadge = itemEl.querySelector('.status-badge');
+            const progressWrapper = itemEl.querySelector('.progress-wrapper');
+            const logListEl = itemEl.querySelector('.log-list');
 
-        const formData = new FormData();
-        formData.append('file', file);
+            const formData = new FormData();
+            formData.append('file', file);
 
-        try {
+            // Upload the file
             progressWrapper.style.display = 'block';
-
-            // 使用动态的 totalNodes 计算基础上传进度
             const uploadPercentage = (1 / totalNodes) * 100;
             updateProgressUI(progressWrapper, Math.min(uploadPercentage, 10));
 
@@ -496,34 +645,39 @@
             initialLog.className = "log-running";
             logListEl.appendChild(initialLog);
 
-            const response = await fetch(`${API_BASE}/upload`, {
+            fetch(`${API_BASE}/upload`, {
                 method: 'POST',
                 body: formData
+            })
+            .then(response => {
+                if (!response.ok) throw new Error('Upload failed');
+                return response.json();
+            })
+            .then(result => {
+                const taskId = result.task_id;
+
+                updateProgressUI(progressWrapper, uploadPercentage);
+                statusBadge.textContent = '处理中';
+                statusBadge.className = 'status-badge status-processing';
+
+                // Poll until complete or failed
+                pollStatusSequential(taskId, itemEl, totalNodes, resolve, reject);
+            })
+            .catch(error => {
+                console.error(error);
+                statusBadge.textContent = '上传失败';
+                statusBadge.className = 'status-badge status-error';
+                updateProgressUI(progressWrapper, 0);
+
+                const errLog = document.createElement('li');
+                errLog.textContent = "❌ 网络请求失败或服务器异常";
+                errLog.style.color = "#ef4444";
+                logListEl.appendChild(errLog);
+
+                // Reject to signal failure, but queue will continue
+                reject(error);
             });
-
-            if (!response.ok) throw new Error('Upload failed');
-
-            const result = await response.json();
-            const taskId = result.task_id;
-
-            updateProgressUI(progressWrapper, uploadPercentage);
-            statusBadge.textContent = '处理中';
-            statusBadge.className = 'status-badge status-processing';
-
-            // 把专属的 totalNodes 传给轮询函数
-            pollStatus(taskId, itemEl, totalNodes);
-
-        } catch (error) {
-            console.error(error);
-            statusBadge.textContent = '上传失败';
-            statusBadge.className = 'status-badge status-error';
-            updateProgressUI(progressWrapper, 0);
-
-            const errLog = document.createElement('li');
-            errLog.textContent = "❌ 网络请求失败或服务器异常";
-            errLog.style.color = "#ef4444";
-            logListEl.appendChild(errLog);
-        }
+        });
     }
 
     function normalizeLogText(text) {
@@ -604,7 +758,7 @@
         return currentPercentage;
     }
 
-    function pollStatus(taskId, itemEl, totalNodes) {
+    function pollStatusSequential(taskId, itemEl, totalNodes, resolve, reject) {
         const statusBadge = itemEl.querySelector('.status-badge');
         const progressWrapper = itemEl.querySelector('.progress-wrapper');
         const logDetails = itemEl.querySelector('.log-details');
@@ -635,6 +789,9 @@
                         logDetails.open = false;
                     }, 1000);
 
+                    // Signal success to queue processor
+                    resolve();
+
                 } else if (data.status === 'failed') {
                     stopped = true;
                     clearInterval(interval);
@@ -647,13 +804,59 @@
                     errLog.style.color = "#ef4444";
                     logListEl.appendChild(errLog);
 
+                    // Signal failure to queue processor
+                    reject(new Error('Processing failed'));
+
                 } else if (data.status === 'processing') {
                     updateProgressUI(progressWrapper, calculatedPercentage);
                 }
             } catch (e) {
                 console.error('Polling error', e);
+                // Don't reject here, keep polling - transient network errors
             }
         }, 1500);
+    }
+
+    function updateQueueProgressUI() {
+        const totalFiles = QueueState.files.length;
+        const processedCount = QueueState.currentIndex;
+        const percentage = totalFiles > 0 ? (processedCount / totalFiles) * 100 : 0;
+
+        queueProgressBarEl.style.width = percentage + '%';
+        queueProgressTextEl.textContent = `${processedCount}/${totalFiles}`;
+
+        // Update progress bar color based on completion
+        if (percentage >= 100) {
+            queueProgressBarEl.style.background = 'linear-gradient(90deg, #10b981, #34d399)';
+        } else {
+            queueProgressBarEl.style.background = 'linear-gradient(90deg, #3b82f6, #60a5fa)';
+        }
+    }
+
+    async function finishQueue(totalFiles) {
+        QueueState.isProcessing = false;
+
+        // Re-enable upload area
+        dropZone.classList.remove('disabled');
+        fileInput.disabled = false;
+
+        // Show final status
+        const successText = QueueState.completedCount > 0 ? `${QueueState.completedCount} 个成功` : '';
+        const failedText = QueueState.failedCount > 0 ? `${QueueState.failedCount} 个失败` : '';
+        const separator = successText && failedText ? ', ' : '';
+
+        queueStatusTextEl.textContent = `处理完成！${successText}${separator}${failedText}`;
+        queueProgressBarEl.style.width = '100%';
+        queueProgressBarEl.style.background = 'linear-gradient(90deg, #10b981, #34d399)';
+
+        // Clear queue after 5 seconds
+        setTimeout(() => {
+            QueueState.files = [];
+            QueueState.currentIndex = 0;
+            QueueState.completedCount = 0;
+            QueueState.failedCount = 0;
+            queueProgressEl.style.display = 'none';
+        }, 5000);
     }
 </script>
 
