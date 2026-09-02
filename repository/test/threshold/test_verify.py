@@ -31,14 +31,14 @@ def verify(test_cases: List[Dict[str, Any]], config: ThresholdConfig = None) -> 
 
     # 将最佳阈值写入全局配置，这样 ItemNameConfirmedNode 内部的 _ItemNameAligner
     # 通过 get_config() 拿到的就是 best 阈值，而不是默认值
-    from knowledge.processor.query_processor.base import get_config
+    from repository.processor.query_processor.base import get_config
     query_config = get_config()
     query_config.item_name_high_confidence = best["confirm"]
     query_config.item_name_mid_confidence = best["options"]
     query_config.item_name_score_gap = best["gap"]
 
     # 使用真实节点（此时节点内部读取的配置已经是 best 阈值）
-    from knowledge.processor.query_processor.nodes.item_name_confirmed_node import ItemNameConfirmedNode
+    from repository.processor.query_processor.nodes.item_name_confirmed_node import ItemNameConfirmedNode
 
     node = ItemNameConfirmedNode()
 

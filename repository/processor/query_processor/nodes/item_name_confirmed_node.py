@@ -1,3 +1,17 @@
+"""
+节点名称：item_name_confirmed_node (意图识别与路由节点)
+
+核心逻辑说明（新架构）：
+1. 结构化意图提取：利用 LLM 将用户的自然语言查询转换为包含明确特征（品牌、型号、类别）的 JSON 数组，支持单次提问中包含【多个产品】的对比。
+2. 领域安全拦截：通过 `is_domain_relevant` 字段，前置拦截闲聊、天气等非专业领域问题，节省 Token 与检索资源。
+3. 官方型号对齐（归一化）：对于提取出的具体型号（如 "350-24"），到 Milvus 的商品名库中进行碰撞，将其修正为官方标准名（如 "LRS-350-24"）。
+   * 采用【顺延占位机制】，避免两个相似的口语化产品被映射到同一个官方标准名上。
+4. 三路路由决策（Routing）：
+   - 无关问题，或完全没有提取到有效特征，直接结束。
+   - 有具体型号且在本地知识库中找到了高置信度的映射，走本地高精度检索。
+   - 无具体型号的走泛化查询
+"""
+
 import logging, re, json
 from json import JSONDecodeError
 
@@ -9,328 +23,164 @@ from repository.processor.query_processor.base import BaseNode
 from repository.processor.query_processor.state import QueryGraphState
 from repository.utils.client.ai_clients import AIClients
 from repository.utils.client.storage_clients import StorageClients
-from repository.prompts.query_prompt import ITEM_NAME_USER_EXTRACT_TEMPLATE
+from repository.prompts.query_prompt import ITEM_NAME_USER_EXTRACT_TEMPLATE, ITEM_NAME_SYSTEM_EXTRACT_TEMPLATE
 from repository.utils.embedding_util import generate_bge_m3_hybrid_vectors
 from repository.utils.milvus_util import create_hybrid_search_requests, execute_hybrid_search_query
 from repository.processor.query_processor.config import get_config
 from repository.utils.mongo_history_util import get_recent_messages
 
+
 class _ItemNameExtractor:
 
     def extract_item_name(self, original_query: str, history_context: str) -> Dict[str, Any]:
-        """
-        提取商品名
-        Args:
-            original_query: 用户原始查询
-            history_context: 历史对话上下文
+        """保持签名不变"""
+        llm_result = {
+            "item_names": [],
+            "rewritten_query": original_query,
+            "is_domain_relevant": True,
+            "query_features_list": []
+        }
 
-        Returns:
-
-        """
-
-        # 1. 定义LLM输出默认结果
-        llm_result = {"item_names": [], "rewritten_query": original_query}
-
-        # 2. 获取LLM客户端
         try:
             llm_client = AIClients.get_llm_client(response_format=True)
         except ConnectionError as e:
             logger.error(f"LLM客户端获取失败 原因:{str(e)}")
             return llm_result
 
-        # 3. 获取商品名提取的提示词
-        # 3.1 系统提示词
-        item_name_system_prompt = "您是一位商品名提取专家，请从用户的问题以及历史对话中提取相关的商品名以及改写原始查询"
-        # 3.2 用户提示词
         item_name_user_prompt = ITEM_NAME_USER_EXTRACT_TEMPLATE.format(
             history_text=history_context.strip() if history_context else "暂无历史上下文",
             query=original_query)
 
-        # 4. 调用LLM
         try:
             llm_response = llm_client.invoke([
-                SystemMessage(content=item_name_system_prompt),
+                SystemMessage(content=ITEM_NAME_SYSTEM_EXTRACT_TEMPLATE),
                 HumanMessage(content=item_name_user_prompt)
             ])
         except Exception as e:
             logger.error(f"LLM调用失败,原因：{str(e)}")
             return llm_result
 
-        # 5. 获取LLM输出内容
-        llm_response_content = llm_response.content
-
-        # 6. 判断LLM的输出
-        if not llm_response_content:
+        parsed_result = self._clean_and_parse(llm_response.content)
+        if not parsed_result:
             return llm_result
 
-        # 7. 清洗(判断输出内容的类型以及空格)和解析(反序列化)
-        parsed_result: Dict[str, Any] = self._clean_and_parse(llm_response_content)
+        # 解析多商品特征
+        products = parsed_result.get("products", [])
+        if not isinstance(products, list):
+            products = []
 
-        # 8. 组装数据
-        llm_result['item_names'] = parsed_result.get('item_names')
-        llm_result['rewritten_query'] = parsed_result.get('rewritten_query') if parsed_result.get(
-            'rewritten_query') else original_query
+        item_names = []
+        for p in products:
+            if not isinstance(p, dict): continue
+            brand = p.get("brand")
+            model = p.get("model")
+            category = p.get("category")
 
-        # 9. 返回结果
+            # 为每个产品单独拼装一个检索长词，即使没有model也会拼装（供下游Web搜索备用）
+            combined_name = f"{brand or ''} {model or ''} {category or ''}".strip()
+            if combined_name:
+                item_names.append(combined_name)
+
+        llm_result['item_names'] = item_names
+        llm_result['rewritten_query'] = parsed_result.get('rewritten_query', original_query)
+        llm_result['is_domain_relevant'] = parsed_result.get('is_domain_relevant', True)
+        llm_result['query_features_list'] = products
         return llm_result
 
     def _clean_and_parse(self, llm_response_content: str) -> Dict[str, Any]:
-        """
-        清洗以及解析LLM的结果
-        Args:
-            llm_response_content: llm的输出
-
-        Returns:
-
-        """
-        # 1. 去除json代码块围栏标记```{}``` llm模型换了或者模型底层调用的API升级（防御性编程）
+        """保持签名不变"""
         cleaned = re.sub(r"^```(?:json)?\s*", "", llm_response_content.strip())
         content = re.sub(r"\s*```$", "", cleaned)
-
-        # 2. 解析
         try:
-            # 2.1 反序列化
-            llm_content_obj: Dict[str, Any] = json.loads(content)
-
-            # 2.2 获取item_names
-            raw_item_names = llm_content_obj.get('item_names')
-
-            # 2.3 判断类型
-            if not isinstance(raw_item_names, list):
-                item_names = []
-            else:
-                item_names = [item_name.strip() for item_name in raw_item_names if
-                              isinstance(item_name, str) and item_name.strip()]
-
-            # 2.4 获取rewritten_query
-            raw_rewritten_query = llm_content_obj.get('rewritten_query')
-            if not isinstance(raw_rewritten_query, str):
-                rewritten_query = ""
-            else:
-                rewritten_query = raw_rewritten_query.strip()
-
-            # 2.5 返回
-            return {
-                "item_names": item_names,
-                "rewritten_query": rewritten_query
-            }
+            return json.loads(content)
         except JSONDecodeError as e:
             logger.error(f"llm输出结果{llm_response_content} 反序列化失败 原因:{str(e)}")
-            raise JSONDecodeError(msg=e.msg,
-                                  doc=e.doc,
-                                  pos=e.pos)
+            return {}
+
 
 class _ItemNameAligner:
-
     def __init__(self):
         self._config = get_config()
 
-    def search_and_align(self, item_names: List[str]) -> Tuple[List[str], List[str]]:
-        """
-        检索向量数据库并且和向量数据库中的商品名对齐 最终返回确定的商品名列表或者模糊的商品名列表
-        Args:
-            item_names: LLM提起到商品名列表
-
-        Returns:
-
-        """
-
-        # 1. 混合检索向量数据库
-        search_result: List[Dict[str, Any]] = self._search_vector(item_names)
+    def search_and_align(self, search_item_names: List[str]) -> List[str]:
+        """返回 confirmed (List[str])"""
+        search_result: List[Dict[str, Any]] = self._search_vector(search_item_names)
         if not search_result:
-            return [], []
-        # 2. 根据混合向量检索到结果做对齐【confirmed/options 】
-        confirmed, options = self._align(search_result)
-
-        # 3. 分数差异化过滤
-        if len(confirmed) > 1:
-            confirmed = self._item_name_score_filter(confirmed, search_result)
-
-        # 4. 返回确定的confirmed容器和options容器
-        return confirmed, options
+            return []
+        confirmed = self._align(search_result)
+        return confirmed
 
     def _search_vector(self, item_names: List[str]) -> List[Dict[str, Any]]:
-        """
-         对LLM提取到的所有商品名进行向量检索
-        Args:
-            item_names: LLM提取到商品名列表
-
-        Returns:
-          Dict[str, Any]:
-          {"extracted_name":"LLM提取的商品名1","matches":[{向量库中查询到的文档1},{向量库中查询到的文档2}]}
-          {"extracted_name":"LLM提取的商品名2","matches":[{向量库中查询到的文档1},{向量库中查询到的文档2}]}
-
-        """
+        """保持签名不变"""
         final_search_result = []
-        # 1. 获取Milvus客户端
         try:
             milvus_client = StorageClients.get_milvus_client()
-        except ConnectionError as e:
-            logger.error(f"Milvus客户端获取失败 原因:{str(e)}")
-            return final_search_result
-
-        # 2. 获取BGE-M3嵌入模型
-        try:
             bge_m3_client = AIClients.get_bge_m3_client()
         except ConnectionError as e:
-            logger.error(f"BGE-M3客户端获取失败 原因:{str(e)}")
+            logger.error(f"客户端获取失败 原因:{str(e)}")
             return final_search_result
 
-        # 3. 商品名列表向量化(混合向量)
         try:
             hybrid_vector_result = generate_bge_m3_hybrid_vectors(model=bge_m3_client, embedding_documents=item_names)
         except Exception as e:
-            logger.error(f"商品列表{item_names}生成混合向量失败 原因:{str(e)} ")
+            logger.error(f"生成混合向量失败 原因:{str(e)} ")
             return final_search_result
 
-        # 4. 混合向量检索
         for index, item_name in enumerate(item_names):
-            # 4.1 构建稠密以及混合向量的检索请求
-            hybrid_requests = create_hybrid_search_requests(hybrid_vector_result['dense'][index],
-                                                            hybrid_vector_result['sparse'][index])
+            hybrid_requests = create_hybrid_search_requests(
+                hybrid_vector_result['dense'][index],
+                hybrid_vector_result['sparse'][index],
+                limit=self._config.item_name_search_limit_per_req,
+            )
 
-            # 4.2 执行混合检索
-            hybrid_search_result = execute_hybrid_search_query(milvus_client=milvus_client,
-                                                               collection_name=self._config.item_name_collection,
-                                                               search_requests=hybrid_requests,
-                                                               ranker_weights=(0.5, 0.5),
-                                                               norm_score=True,
-                                                               limit=5,
-                                                               output_fields=['item_name']
-                                                               )
+            hybrid_search_result = execute_hybrid_search_query(
+                milvus_client=milvus_client,
+                collection_name=self._config.item_name_collection,
+                search_requests=hybrid_requests,
+                ranker_weights=(self._config.item_name_dense_weight, self._config.item_name_sparse_weight),
+                norm_score=True,
+                limit=self._config.item_name_search_limit,
+                output_fields=['item_name']
+            )
 
-            # 4.3 解析结果
-
-            matches = [{"score": item_search_res['distance'], "item_name": item_search_res['entity']['item_name']} for
-                       item_search_res in
+            matches = [{"score": res['distance'], "item_name": res['entity'].get('item_name', '')} for res in
                        (hybrid_search_result[0] if hybrid_search_result else [])]
 
-            # 4.4 封装
             final_search_result.append({
                 "extracted_name": item_name,
                 "matches": matches
             })
-
         return final_search_result
 
-    def _align(self, search_result: List[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
-        """
-        主要职责：对齐
-        怎么对齐？
-        将什么样的商品名item_name放到confirmed
-        将什么样的商品名item_name放到options
-        将什么样的商品名item_name两个容器都不放
-        制定规则：
-        两个规则：1.如果从向量数据库中查到的商品名分数比如大于0.7 放到confirmed
-        两个规则：2.如果从向量数据库中查到的商品名分数比如小于等于0.7大于0.45 放到options
-                 3.如果从向量数据库中查到的商品名分数小于等于0.45 两个容器都不放
-        疑问：TODO (后续RAG阈值调参)
-         0.7 or 0.45如何给的?不应该拍着脑袋给。压测得到（构建数据集【询问的方式、llm提取到的商品名】 2. 构建阈值集 3.跑完整个流程：得到哪些阈值更适合构建的数据集）
-
-        confirmed容器不应该出现两个一模一样的商品名--->下游检索【根本不需要两个一模一样的商品名】
-        options容器中不能出现两个一模一样的商品名--->用户展示[也不应该展示两个一模一样的商品名]
-        场景：confirmed中的商品名可能在options出现：如果某个商品名在confirmed中出现，不用再添加到options中。
-        记住：
-        像options中添加的商品名满足三个条件 条件1：小于high阈值且大于low阈值 条件2：该商品名不在options 条件3：不在confirmed中
-        像confirmed中添加商品名的:条件1：阈值大于high(3个小条件：extract/len(high)==1/>= self._config.item_name_score_gap)
-                               条件2：该商品名不在confirmed中
-                               条件3：不用考虑options的，哪怕这个商品名已经在options.只要能进入不到confirmed中添加
-
-        Args:
-            search_result:  向量数据库检索到的结果
-
-        Returns:
-          最终两个容器confirmed、options列表中的商品名
-        """
-
-        # 1. 定义两个容器
+    def _align(self, search_result: List[Dict[str, Any]]) -> List[str]:
+        """【顺延占位版】：遍历所有的搜索结果，遇到碰撞自动顺延取 Top2/Top3"""
         confirmed = []
-        options = []
+        # 兼容旧配置并引入新的单一置信度
+        confidence_threshold = self._config.item_name_confidence
 
-        # 2. 遍历检索到的所有商品名的从milvus中的搜索结果
         for item_sea_res in search_result:
-            # 2.1 获取extracted_name（LLM提取的商品名）
-            llm_extract_item_name = item_sea_res.get('extracted_name')
+            item_name_matches = item_sea_res.get('matches', [])
+            if not item_name_matches:
+                continue
 
-            # 2.2 获取matches(某一个商品名下的搜索结果)
-            item_name_matches = item_sea_res.get('matches')
-
-            # 2.3 (可选) 对某一个商品名下的搜索结果根据分数进行降序排序
+            # 按分数降序排列
             item_name_matches_sorted = sorted(item_name_matches, key=lambda x: x['score'], reverse=True)
 
-            # 2.4 (收集--->分数值大于0.7的搜索结果:高置信度)
-            high = [h for h in item_name_matches_sorted if h.get('score') > self._config.item_name_high_confidence]
-
-            # 2.5 高置信度的有
-            if high:
-                # 1) 是否从向量数据库中搜索到的商品名还和LLM提取到的相等，如果相等，最精准
-                extract = next((h for h in high if h.get('item_name') == llm_extract_item_name), None)
-
-                if extract:  # 条件很难触发(有可能 概率低)
-                    picked = extract.get('item_name')
-                    if picked not in confirmed:  # 去重（认为有重复的 去重）
+            # 遍历当前提取产品的候选列表，寻找【达标】且【未被占用】的型号
+            for match in item_name_matches_sorted:
+                # 只有分数大于置信度的才有资格被选中
+                if match.get('score') > confidence_threshold:
+                    picked = match.get('item_name')
+                    # 如果该型号有效且没有被前面的产品认领走
+                    if picked and picked not in confirmed:
                         confirmed.append(picked)
-                elif len(high) == 1:
-                    picked = high[0]['item_name']
-                    if picked not in confirmed:
-                        confirmed.append(picked)
+                        break  # 占坑成功，立刻跳出内层循环，去处理下一个实体产品
                 else:
-                    # 有多个分数值比较高的商品名[0.75,0.74,0.71]
-                    top_score = high[0]['score']
-                    if top_score - high[1]['score'] >= self._config.item_name_score_gap:
-                        picked = high[0]['item_name']
-                        if picked not in confirmed:
-                            confirmed.append(picked)
-                    else:
-                        for h in high[:self._config.item_name_max_options]:
-                            picked = h.get('item_name')
-                            if picked not in options and picked not in confirmed:
-                                options.append(picked)
-            # 不是高置信度，有可能是中等置信，也有可能不是中等置信
-            else:
-                mid = [m for m in item_name_matches_sorted if
-                       m['score'] >= self._config.item_name_mid_confidence
-                       and m.get('item_name') not in options
-                       and m.get('item_name') not in confirmed]
-                if mid:
-                    for m in mid[:self._config.item_name_max_options]:
-                        options.append(m.get('item_name'))  # 一次循环内部只留三个可选的
+                    # 因为是降序排列，如果当前这个分数已经不够了，后面的肯定更低，直接抛弃
+                    break
 
-        return confirmed, options[:self._config.item_name_max_options]  # 最终只留三个可选的商品名给前端
+        return confirmed
 
-    def _item_name_score_filter(self, confirmed: List[str], search_result: List[Dict[str, Any]]):
-
-        """
-        # RS12数字万用表和RS13数字万用表
-        item_name:RS12数字万用表:0.90
-        item_name:万用表:0.71
-        item_name:RS13数字万用表:0.88
-        Args:
-            confirmed:
-            search_result:[]
-
-        Returns:
-
-        """
-
-        # 1. 构建 商品名 → 最高分数 的映射
-        item_name_score = {}
-        for search_result in search_result:
-            matches = search_result.get('matches', [])
-            for m in matches:
-                score = m.get('score', 0)
-                item_name = m.get('item_name')
-                if item_name in confirmed:
-                    item_name_score[item_name] = max(item_name_score.get(item_name, 0), score)
-
-        # 2. 防御性检查：如果没有收集到任何分数，直接返回原始 confirmed
-        if not item_name_score:
-            return confirmed
-
-        # 3. 取出分数值最大的作为基准
-        max_score = max(item_name_score.values())
-        return [name for name, score in item_name_score.items() if
-                max_score - score <= self._config.item_name_score_gap]
 
 class ItemNameConfirmedNode(BaseNode):
     name = "item_name_confirmed_node"
@@ -341,87 +191,72 @@ class ItemNameConfirmedNode(BaseNode):
         self._aligner = _ItemNameAligner()
 
     def process(self, state: QueryGraphState) -> QueryGraphState:
-        """
-        主要职责：
-        1. 利用LLM从用户原始查询中提取商品名以及改写原始问查询
-        1.1 如果LLM提取到了商品名，才进行第2步 去milvus对齐
-        1.2 如果LLM没有提取到商品名，直接返回
-        2. 根据Milvus中存储的商品名进行对齐（目的：检索更加的准确：三路检索都会利用该节点提取到的商品名，
-        因此直接用LLM提取到商品名的话，下游三路检索在过滤的时候，过滤条件极其不准确。导致检索到的噪音很多 LLM最终输出的幻觉很高）。
-        所以最终不是用LLM给的商品名 而是用Milvus中存储的商品名：因为milvus中每一个chunK都会关联milvus自己的商品名
-        3. 决策（该走下去，还是回头）
-
-        利用两个容器，产生三个分支：第一个分支去检索  第二个分支：给用户确认  第三个分支：抱歉
-        1. confirmed:如果是精确的商品名--->给confirmed添加精确的商品名
-        2. options:商品名不是精确，可是找到多个相似的---->给options中添加找到的多个不精确的商品名。
-
-        不给state['answer']，进行三路检索，获取到三路检索结果，把三路检索到的结果(RRF  RERANKER)给LLM，LLM生成答案,在state['answer']
-        给state['answer']就返回：
-        1. 返回候选商品名【不精确】，给用户下一步确认使用
-        2. 没有任何商品名，返回抱歉，没有找到您询问的关于任何商品的名字
-        Args:
-            state:
-        Returns:
-        """
-        # 1. 获取用户原始问题
-        original_query = state.get('original_query')
+        original_query = state.get('original_query', '')
         session_id = state.get('session_id')
 
-        # 2. 获取历史对话(mongodb)
-        history_context = get_recent_messages(session_id=session_id, limit=10)  # 条数10 轮数是5
-        formatted_history = []
-        for history in history_context:
-            role = history.get('role', '')
-            text = history.get('text', '')
-            formatted_context = f"角色:{role},内容:{text}"
-            formatted_history.append(formatted_context)
-        formatted_history_str = " ".join(formatted_history)
+        history_context = get_recent_messages(session_id=session_id, limit=10)
+        formatted_history = " ".join([f"角色:{h.get('role', '')},内容:{h.get('text', '')}" for h in history_context])
 
-        # 3. 利用LLM进行商品名提取和查询重写
-        llm_result: Dict[str, Any] = self._extractor.extract_item_name(original_query, formatted_history_str)
+        llm_result: Dict[str, Any] = self._extractor.extract_item_name(original_query, formatted_history)
 
-        # 3.1 获取LLM结果
-        item_names = llm_result.get('item_names')
+        # 局部变量提取
+        is_relevant = llm_result.get('is_domain_relevant', True)
+        products = llm_result.get('query_features_list', [])
+        item_names = llm_result.get('item_names', [])
         rewritten_query = llm_result.get('rewritten_query')
 
-        # 4. 根据item_names做判断
-        if item_names:
-            confirmed, options = self._aligner.search_and_align(item_names)
+        # 【新增过滤】：只有包含 model 的产品，才会被装填进向量检索列表
+        search_item_names = []
+        for p in products:
+            if p.get('model'):
+                brand = p.get("brand")
+                model = p.get("model")
+                category = p.get("category")
+                name_str = f"{brand or ''} {model or ''} {category or ''}".strip()
+                if name_str:
+                    search_item_names.append(name_str)
+
+        # 仅对存在 model 的产品进行向量数据库撞库对齐
+        if search_item_names:
+            confirmed = self._aligner.search_and_align(search_item_names)
         else:
-            confirmed, options = [], []
+            confirmed = []
 
-        # 5. 决策
-        self._decide(confirmed, options, state, rewritten_query, item_names)
+        # 核心决策分发（去除了 options 参数）
+        self._decide(confirmed, state, rewritten_query, item_names, is_relevant, products)
 
-        # 6. 更新state的历史对话(从MongoDB中查询出来)
         state['history'] = history_context
         return state
 
-    def _decide(self, confirmed: List[str], options: List[str], state: QueryGraphState,
-                rewritten_query: str, item_names: List[str]):
-        """
-        根据confirmed、options来判断是继续检索还是返回用户提示信息
-        Args:
-            confirmed:  已经确认的商品名列表
-            options: 模糊的商品名列表
-            state: 查询状态
-            rewritten_query: 重写后的问题
-            item_names: LLM提取到的商品名列表
+    def _decide(self, confirmed: List[str], state: QueryGraphState,
+                rewritten_query: str, item_names: List[str],
+                is_relevant: bool, products: List[Dict[str, Any]]):
+        """【精简决策分支】：执行明确的三路路由"""
 
-        Returns:
+        has_any_feature = False
+        has_any_model = False
+        for p in products:
+            if p.get('brand') or p.get('model') or p.get('category'):
+                has_any_feature = True
+            if p.get('model'):
+                has_any_model = True
 
-        """
+        # === 规则 1：不相关，或者 (品牌、型号、类型) 都没有 -> 直接 End ===
+        if not is_relevant or not has_any_feature:
+            state["answer"] = "抱歉，我无法识别您询问的具体产品名称或需求，请提供更准确的信息。"
+            return
 
-        if confirmed:
-            state['item_names'] = confirmed  # 对齐后的商品名
+        # === 规则 3：提取到了model且库内对齐分数高于置信度 -> 走高精检索===
+        if has_any_model and confirmed:
+            state['item_names'] = confirmed  # 放入成功对齐后的官方名称列表
             state['rewritten_query'] = rewritten_query
-        elif options:
-            state["answer"] = (
-                f"我不确定您指的是哪款产品。"
-                f"您是在询问以下产品吗：{'、'.join(options)}？"
-            )
-        else:
-            state["answer"] = "抱歉，我无法识别您询问的具体产品名称，请提供更准确的产品名称或型号。"
+            state["query_type"] = "precise"
+            return
+
+        # === 规则 2：有model但分数低(confirmed为空)，或者没model但有brand/category -> 泛化查询 ===
+        state['item_names'] = item_names  # 放入原始拼接词
+        state['rewritten_query'] = rewritten_query
+        state["query_type"] = "fuzzy"
 
 if __name__ == '__main__':
     item_name_confirmed_node = ItemNameConfirmedNode()

@@ -24,59 +24,66 @@ class HyDeVectorSearchNode(BaseNode):
 
         # 3. 判断
         if hy_document is None:
-            return state
+            return {"hyde_embedding_chunks": []}
 
         # 4. 获取嵌入模型
         try:
             bge_m3_client = AIClients.get_bge_m3_client()
         except ConnectionError as e:
             self.logger.error(f"BGE-M3嵌入模型获取失败 原因:{str(e)}")
-            return state
+            return {"hyde_embedding_chunks": []}
 
         # 5. 获取Milvus客户端
         try:
             milvus_client = StorageClients.get_milvus_client()
         except ConnectionError as e:
             self.logger.error(f"Milvus客户端获取失败 原因:{str(e)}")
-            return state
+            return {"hyde_embedding_chunks": []}
 
         # 6. 为假设性文档嵌入
         try:
             embed_hy_vector = generate_bge_m3_hybrid_vectors(bge_m3_client, [f"{rewritten_query}\n{hy_document}"])
         except Exception as e:
             self.logger.error(f"假设性文档{hy_document}嵌入获取失败 原因:{str(e)}")
-            return state
+            return {"hyde_embedding_chunks": []}
 
         # 7. 向量检索
         try:
             # 7.1 创建混合检索请求(expr:对检索的返回做过滤的)
-            expr, expr_params = _item_names_filter(item_names)
+            query_type = state.get("query_type", "fuzzy")  # 默认兜底 fuzzy
+            if query_type == "precise":
+                self.logger.error(f"有具体型号，hyde进行精确搜索")
+            else:
+                self.logger.error(f"无具体型号，hyde进行模糊搜索")
+
+            # 将 query_type 传入过滤生成器
+            expr, expr_params = _item_names_filter(item_names, query_type)
             hybrid_search_req = create_hybrid_search_requests(dense_vector=embed_hy_vector['dense'][0],
                                                               sparse_vector=embed_hy_vector['sparse'][0],
                                                               expr=expr,
                                                               expr_params=expr_params,
-                                                              limit=5
+                                                              limit=self.config.hyde_search_limit_per_req
                                                               )
             # 7.2 执行混合搜索请求
             hybrid_search_res = execute_hybrid_search_query(milvus_client=milvus_client,
-                                                            collection_name=self.config.chunks_collection,
+                                                            collection_name=self.config.child_chunks_collection,
                                                             search_requests=hybrid_search_req,
-                                                            ranker_weights=(0.5, 0.5),
+                                                            ranker_weights=(self.config.hyde_search_dense_weight, self.config.hyde_search_sparse_weight),
                                                             norm_score=True,
-                                                            limit=5,
-                                                            output_fields=["chunk_id", "content", "item_name", 'title']
+                                                            limit=self.config.hyde_search_limit,
+                                                            output_fields=["chunk_id", "parent_id", "content", "item_name", 'title']
                                                             )
 
             if not hybrid_search_res or not hybrid_search_res[0]:
-                return state
+                return {"hyde_embedding_chunks": []}
 
             # 7.3 修改自己的并且返回修改后的
             return {"hyde_embedding_chunks": hybrid_search_res[0]}
 
         except Exception as e:
             self.logger.error(
-                f"原始问题{rewritten_query}对应的假设性文档{hy_document}执行混合搜索查询失败 原因:{str(e)}")
-            return state
+                f"原始问题{rewritten_query}对应的假设性文档{hy_document}执行hyde搜索查询失败 原因:{str(e)}")
+            return {"hyde_embedding_chunks": []}
 
     def _validate_state(self, state: QueryGraphState) -> Tuple[str, List[str]]:
         # 1. 用户的问题（LLM重写后的）

@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from pathlib import Path
 from pymilvus.model.hybrid import BGEM3EmbeddingFunction
 from repository.processor.import_processor.base import BaseNode, setup_logging, T
@@ -11,10 +11,9 @@ class EmbeddingChunksNode(BaseNode):
     name = "embedding_chunk_node"
 
     def process(self, state: ImportGraphState) -> ImportGraphState:
-
-        # 1. 校验state的chunks
-        self.log_step("step1", "校验chunks的数据结构")
-        validated_chunks = self._validate_state(state)
+        # 1. 校验 state (现在要拿 parent 和 child 两个集合)
+        self.log_step("step1", "校验父子切片的数据结构")
+        parent_chunks, child_chunks = self._validate_state(state)
 
         # 2. 获取嵌入模型
         self.log_step("step2", "获取BGE-M3嵌入模型客户端")
@@ -24,64 +23,47 @@ class EmbeddingChunksNode(BaseNode):
             self.logger.error(f"BGE-M3嵌入模型创建失败,原因:{str(e)}")
             raise EmbeddingError(message=f"BGE-M3嵌入模型创建失败,原因:{str(e)}", node_name=self.name)
 
-        # 3. 批量嵌入
-        # 3.1 获取批量阈值
+        # 3. 批量嵌入 (核心修改：只对 child_chunks 进行向量化)
         batch_size = self.config.embedding_batch_size
+        total_children = len(child_chunks)
+        final_child_chunks = []
 
-        # 3.2 获取chunks的总数
-        total = len(validated_chunks)
+        self.logger.info(f"开始对子切片进行向量化，父切片跳过。子切片总数: {total_children}")
 
-        # 3.3 遍历
-        final_chunks = []
-        for index in range(0, total, batch_size):
-            # 获取当前这一批
-            batch_chunks = validated_chunks[index:index + batch_size]
-            # 获取当前这个一批的最后一个编号
+        for index in range(0, total_children, batch_size):
+            batch_chunks = child_chunks[index:index + batch_size]
             batch_end = index + len(batch_chunks)
-            self.logger.info(f"嵌入批次 [{index + 1}-{batch_end}] / {total}")
-            current_chunks = self._embed_chunks(batch_chunks, embed_model)
-            final_chunks.extend(current_chunks)
+            self.logger.info(f"子切片嵌入批次 [{index + 1}-{batch_end}] / {total_children}")
 
-        # 4. 更新state的chunks
-        state['chunks'] = final_chunks
-        # 5. 返回
+            current_chunks = self._embed_chunks(batch_chunks, embed_model)
+            final_child_chunks.extend(current_chunks)
+
+        # 4. 更新 state (父切片原样返回，子切片带上了向量)
+        state['parent_chunks'] = parent_chunks
+        state['child_chunks'] = final_child_chunks
+
         return state
 
-    def _validate_state(self, state: ImportGraphState) -> List[Dict[str, Any]]:
-        # 1. 获取chunks
-        chunks = state.get('chunks')
+    def _validate_state(self, state: ImportGraphState) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        # 1. 获取并校验父块
+        parent_chunks = state.get('parent_chunks')
+        if not parent_chunks or not isinstance(parent_chunks, list):
+            raise StateFieldError(node_name=self.name, field_name="parent_chunks", expected_type=list)
 
-        # 2. 校验chunks类型
-        if not chunks or not isinstance(chunks, list):
-            raise StateFieldError(node_name=self.name, field_name="chunks", expected_type=list)
+        # 2. 获取并校验子块
+        child_chunks = state.get('child_chunks')
+        if not child_chunks or not isinstance(child_chunks, list):
+            raise StateFieldError(node_name=self.name, field_name="child_chunks", expected_type=list)
 
-        # 3. 遍历检验每一个chunk的类型
-        for index, chunk in enumerate(chunks):
-
-            # 校验单个chunk
-            if not isinstance(chunk, dict):
-                raise ValidationError(
-                    message=f"[chunk_{index + 1}] 类型和期望的类型不匹配，实际的类型{type(chunk).__name__}",
-                    node_name=self.name)
-
-        # 4. 返回chunks
-        return chunks
+        # 这里你可以加一些针对单个 chunk 是否是 dict 的循环校验，如果嫌啰嗦也可以省略
+        return parent_chunks, child_chunks
 
     def _embed_chunks(self, batch_chunks: List[Dict[str, Any]], embed_model: BGEM3EmbeddingFunction) -> List[
         Dict[str, Any]]:
-        """
-        批量嵌入chunks
-        Args:
-            bath_chunks: 批量chunks
-            embed_model: 嵌入模型
-
-        Returns:
-
-        """
-        # 1. 获取要嵌入的内容
+        """批量嵌入子块"""
+        # 注意：这里我们依然使用 item_name 和子块的 content 拼接作为检索标的
         embedding_documents = [f"{chunk.get('item_name', '')}\n{chunk.get('content', '')}" for chunk in batch_chunks]
 
-        # 2. 嵌入chunks的真正内容
         try:
             embed_vector = embed_model.encode_documents(embedding_documents)
         except Exception as e:
@@ -90,7 +72,6 @@ class EmbeddingChunksNode(BaseNode):
         if not embed_vector:
             raise EmbeddingError(message="嵌入结果不存在")
 
-        # 3. 遍历这一批的每一个chunk
         sparse_csr = embed_vector.get('sparse')
         for i, chunk in enumerate(batch_chunks):
             chunk['dense_vector'] = embed_vector.get('dense')[i].tolist()
@@ -99,36 +80,24 @@ class EmbeddingChunksNode(BaseNode):
         return batch_chunks
 
     def _extract_sparse_vector(self, sparse_csr, index: int):
-        """
-        从稀疏矩阵中提取当前chunk对象的稀疏向量
-        Args:
-            sparse_csr:
-            index:
-
-        Returns:
-
-        """
-        # 3.1 从行索引中获取当前chunk的起始索引和结束索引
+        """从稀疏矩阵中提取当前chunk对象的稀疏向量"""
         start_index = sparse_csr.indptr[index]
         end_index = sparse_csr.indptr[index + 1]
-        # 3.2 获取token_id
         token_id = sparse_csr.indices[start_index:end_index].tolist()
-        # 3.3 获取weight
         weight = sparse_csr.data[start_index:end_index].tolist()
-
-        # 3.4 返回单个chunk的稀疏向量值
         return dict(zip(token_id, weight))
+
 
 if __name__ == '__main__':
     import json
 
     setup_logging()
 
-    base_dir = Path(
-        r"D:\Project\llm-project\RAG_repository\repository\processor\import_processor\temp"
-    )
-    input_path = base_dir / "chunks_item_name.json"
-    output_path = base_dir / "chunks_vector.json"
+    base_dir = Path(r"D:\Project\llm-project\RAG_repository\repository\processor\import_processor\temp")
+
+    # 模拟读取经过了 item_name_recognition_node 之后的父子 JSON 文件
+    input_path = base_dir / "chunks_item_name_parent_child.json"
+    output_path = base_dir / "chunks_vector_parent_child.json"
 
     if not input_path.exists():
         raise FileNotFoundError(f"找不到输入文件: {input_path}")
@@ -137,7 +106,11 @@ if __name__ == '__main__':
         chunks_data = json.load(f)
 
     node = EmbeddingChunksNode()
-    result_state = node.process({"chunks": chunks_data.get('chunks')})
+    # 传入父子数据
+    result_state = node.process({
+        "parent_chunks": chunks_data.get('parent_chunks'),
+        "child_chunks": chunks_data.get('child_chunks')
+    })
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(result_state, f, ensure_ascii=False, indent=4)

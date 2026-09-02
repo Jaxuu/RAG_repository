@@ -1,4 +1,4 @@
-import re, os, json
+import re, os, json, uuid
 from typing import Tuple, List, Dict, Any
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from repository.processor.import_processor.base import BaseNode, setup_logging
@@ -24,22 +24,25 @@ class DocumentSplitNode(BaseNode):
         # 1. 参数校验
         md_content, file_title, max_content_length, min_content_length = self._validate_state(state, config)
 
-        # 2. 切分（一级策略：根据md文档中的标题来切分）多个章节（章节：标题之间的内容）
+        # 2. 基础切分（一级策略：根据md文档中的标题来切分）多个章节（章节：标题之间的内容）
         sections: List[Dict[str, Any]] = self._split_by_headings(md_content, file_title)
 
-        # 3. 二次切分或者合并
-        final_section = self._split_and_merge(sections, config.max_content_length, config.min_content_length)
+        # 3. 组装父块：进行长短合并，并生成“父块 (Parent Chunks)”
+        # 这里的 final_section 依然是你原本最高质量的 1000 字大块
+        final_section = self._split_and_merge(sections, max_content_length, min_content_length)
+        parent_chunks = self._assemble_parent_chunks(final_section)
 
-        # 4. 组装成chunk对象
-        final_chunks = self._assemble_chunks(final_section)
+        # 4. 【新增】裂变子块：将父块切碎为用于精准检索的“子块 (Child Chunks)”
+        # 假设我们设定子块大小为 250 字符，重叠 30 字符
+        child_chunks = self._generate_child_chunks(parent_chunks, config.child_chunk_size, config.child_chunk_overlap)
 
-        # 5. 备份(观察)
-        self._back_up(final_chunks, state)
+        # 5. 备份(观察父子结构)
+        self._back_up({"parent_chunks": parent_chunks, "child_chunks": child_chunks}, state)
 
-        # 6. 更新state (chunks)
-        state['chunks'] = final_chunks
+        # 6. 更新 state (向下游提供两种切片)
+        state['parent_chunks'] = parent_chunks
+        state['child_chunks'] = child_chunks
 
-        # 7. 返回
         return state
                                                  
 
@@ -58,11 +61,11 @@ class DocumentSplitNode(BaseNode):
         file_title = state.get('file_title')
 
         # 4. 校验最大最小值
-        if config.max_content_length <= 0 or config.min_content_length <= 0 \
-                or config.max_content_length <= config.min_content_length:
+        if config.parent_max_content_length <= 0 or config.parent_min_content_length <= 0 \
+                or config.parent_max_content_length <= config.parent_min_content_length:
             raise ValueError(f"切片长度参数校验失败")
 
-        return md_content, file_title, config.max_content_length, config.min_content_length
+        return md_content, file_title, config.parent_max_content_length, config.parent_min_content_length
 
     def _split_by_headings(self, md_content, file_title)->List[Dict[str, Any]]:
         """
@@ -130,10 +133,10 @@ class DocumentSplitNode(BaseNode):
             if md_line.strip().startswith("```") or md_line.strip().startswith("~~~"):
                 in_fence = not in_fence  # 不要用固定true  or false
 
-            # 3.2 判读是否要走正则
+            # 3.2 判断是否要走正则
             match = heading_re.match(md_line) if not in_fence else None
 
-            # 3.3 判断math 是否有
+            # 3.3 判断match 是否有
             # 代表匹配到了标题而且一定是非代码块中的# 标题
             if match:
 
@@ -180,6 +183,7 @@ class DocumentSplitNode(BaseNode):
 
         return final_sections
 
+
     def _split_long_section(self, section: Dict[str, Any], max_content_length: int) -> List[Dict[str, Any]]:
         """
         切分的章节内容
@@ -202,10 +206,9 @@ class DocumentSplitNode(BaseNode):
         if len(title) > 80:
             title = title[:80]  # 防御性编程：title 本身就超长的极端情况
 
-        if "<table>" in body:
-            self.logger.info("检查到section中有表格")
-            body = MarkdownTableLinearizer.process(body)
-            section['body'] = body
+        # 直接交由 Linearizer 路由处理，它内部会判断是否有 <table 或 |
+        body = MarkdownTableLinearizer.process(body)
+        section['body'] = body
 
         # 2. 获取标题前缀
         title_prefix = f"{title}\n\n"
@@ -227,7 +230,7 @@ class DocumentSplitNode(BaseNode):
                         # 3. separators：分割符 【"\n\n",'\n',' ',''】 4. keep_separator是否保留分隔符
         text_spliter = RecursiveCharacterTextSplitter(
             chunk_size=body_length,
-            chunk_overlap=0,
+            chunk_overlap=15,
             separators=["\n\n", "\n", "。", "？", "！", "；", ".", "?", "!", ';', " ", ""],
             keep_separator=True)
 
@@ -292,44 +295,72 @@ class DocumentSplitNode(BaseNode):
         final_sections.append(current_section)
         return final_sections
 
-    def _assemble_chunks(self, final_sections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _assemble_parent_chunks(self, final_sections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        组装最后的chunks
-        Args:
-            final_section:
-
-        Returns:
-
+        组装父块 (Parent Chunks)，并赋予唯一 ID
         """
-        final_chunks = []
+        parent_chunks = []
         for section in final_sections:
             body = section.get('body')
             title = section.get('title')
-            parent_title = section.get('parent_title')
-            file_title = section.get('file_title')
+
+            # 【关键新增】：生成父块的唯一主键
+            parent_id = str(uuid.uuid4())
 
             content = f"{title}\n\n{body}"
 
-            final_chunks.append({
+            parent_chunks.append({
+                "chunk_id": parent_id,  # 父块 ID
                 "content": content,
                 "title": title,
-                "parent_title": parent_title,
-                "file_title": file_title
+                "parent_title": section.get('parent_title'),
+                "file_title": section.get('file_title')
             })
-        self.logger.info(f"最终切割后能够进入到嵌入节点的chunk个数:{len(final_chunks)}")
-        return final_chunks
+        self.logger.info(f"父块 (Parent Chunks) 生成数量: {len(parent_chunks)}")
+        return parent_chunks
 
-    def _back_up(self, final_chunks, state: ImportGraphState):
-        """将切分结果备份到 JSON 文件"""
+    def _generate_child_chunks(self, parent_chunks: List[Dict[str, Any]], child_chunk_size: int, chunk_overlap: int) -> \
+    List[Dict[str, Any]]:
+        """
+        将父块切分为子块 (Child Chunks)，并建立血缘关联
+        """
+        child_chunks = []
+
+        # 专门用于切分子块的切分器（小颗粒度）
+        child_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=child_chunk_size,
+            chunk_overlap=chunk_overlap,
+            separators=["\n\n", "\n", "。", "；", ".", ";", " ", ""]
+        )
+
+        for parent in parent_chunks:
+            # 切分父块的 content
+            sub_texts = child_splitter.split_text(parent['content'])
+
+            for index, text in enumerate(sub_texts):
+                child_chunks.append({
+                    "chunk_id": str(uuid.uuid4()),  # 子块自己的独立 ID
+                    "parent_id": parent['chunk_id'],  # 【核心】认祖归宗：指向父块 ID
+                    "content": text,
+                    # 继承部分关键元数据，方便排查
+                    "title": parent['title'],
+                    "file_title": parent['file_title']
+                })
+
+        self.logger.info(f"子块 (Child Chunks) 裂变数量: {len(child_chunks)}")
+        return child_chunks
+
+    def _back_up(self, backup_data: Dict[str, Any] , state: ImportGraphState):
+        """将父子切分结果备份到 JSON 文件"""
         local_dir = state.get("file_dir", "")
         if not local_dir:
             return
         try:
-            os.makedirs(local_dir, exist_ok=True)  # 如果目录存在 不报错
-            output_path = os.path.join(local_dir, "chunks.json")
+            os.makedirs(local_dir, exist_ok=True)
+            output_path = os.path.join(local_dir, "chunks_parent_child.json")
 
             with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(final_chunks, f, ensure_ascii=False, indent=2)
+                json.dump(backup_data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self.logger.warning(f"备份失败: {e}")
 

@@ -1,9 +1,11 @@
 from typing import Tuple, List, Dict, Any
 import math
+import re
 from FlagEmbedding import FlagReranker
 from repository.processor.query_processor.base import BaseNode, T
 from repository.processor.query_processor.state import QueryGraphState
 from repository.utils.client.ai_clients import AIClients
+from repository.utils.client.storage_clients import StorageClients
 
 
 class RerankerNode(BaseNode):
@@ -33,15 +35,20 @@ class RerankerNode(BaseNode):
         # 3. 利用Reranker进行精排
         refine_docs: List[Dict[str, Any]] = self._refine_rank(user_query, rerank_outputs)
 
-        # 4.top_k: 静态top_k 设置过大或者过小都有问题。能否使用动态top_k
-        # top_k:如果设置大了 1.LLM上下文过长    2. 可能截取无关上下文(不该检索的确检索到了)--->LLM---> (幻觉)
-        # top_k:如果设置小了 1.LLM上下不会过程  2. 检索到上下文信息不全面(该检索的没有检索到)--->LLM--->(幻觉)
-        # 动态top_k:不是初始的时候不给top_k,初始的时候还是给一个上下边界，但真实的个数会调整，尽量减少幻觉，完全解决幻觉
-        # min_top_k(3):不管如何裁减，至上都要留下三个
-        # max_top_k(10):最多留下10个
-        reranked_docs = self._cliff_cutoff(refine_docs, self.config.rerank_min_top_k, self.config.rerank_max_top_k)
+        # 4. 动态配额与断崖截断 (对子切片执行淘汰机制)
+        reranked_child_docs = self.filter_reranked_docs_by_entity(
+            refine_docs,
+            state.get('item_names', []),
+            self.config.rerank_min_top_k,
+            self.config.rerank_max_top_k
+        )
 
-        state['reranked_docs'] = reranked_docs
+        # 5. 拿幸存的高分子切片，去换取完整的父切片大段落
+        final_parent_docs = self._convert_to_parent_chunks_post_rerank(reranked_child_docs)
+
+        state['reranked_docs'] = final_parent_docs
+
+        self.logger.info(f"Reranker最终输出给大模型的长上下文切片个数: {len(final_parent_docs)}")
 
         return state
 
@@ -67,14 +74,35 @@ class RerankerNode(BaseNode):
             content = chunk.get('content', '')
             if not content:
                 continue
-            # 2.2 获取chunk中的title
-            title = chunk.get('title', '')
 
-            # 2.3 获取chunk中的chunk_id(一定有)
+            #  Markdown 图片链接
+            content = re.sub(r'!\[.*?\]\(.*?\)', '', content)
+            # 清洗 HTML 图片标签 (可选)
+            content = re.sub(r'<img.*?>', '', content)
+            content = content.strip()
+
+            # 【重要】把多余的换行符和空格压缩掉
+            content = re.sub(r'\n+', '\n', content).strip()
+
+            # 如果清洗完图片后，文本过短（比如只剩换行符或一个孤零零的无意义短标题），直接过滤掉
+            if len(content) < 15:
+                continue
+
+            # 2.2 获取chunk中的title、chunk_id、parent_id
+            title = chunk.get('title', '')
             chunk_id = chunk.get('chunk_id')
+            parent_id = chunk.get('parent_id')
+            item_name = chunk.get('item_name', '')
 
             # 3. 格式化文档(格式化本地)
-            formated_local_doc = self._format_doc(content=content, chunk_id=chunk_id, title=title, source="local")
+            formated_local_doc = self._format_doc(
+                content=content,
+                chunk_id=chunk_id,
+                title=title,
+                source="local",
+                parent_id=parent_id,  # 传入 parent_id
+                item_name=item_name
+            )
 
             final_docs.append(formated_local_doc)
 
@@ -97,28 +125,18 @@ class RerankerNode(BaseNode):
             formated_web_doc = self._format_doc(content=content, title=title, url=url, source="web")
             final_docs.append(formated_web_doc)
 
-        self.logger.info(f"获取Reranker阶段需要的搜索结果个数{len(final_docs)}")
+        self.logger.info(f"获取Reranker阶段需要的切片（子切片+Web）个数{len(final_docs)}")
         return final_docs
 
-    def _format_doc(self, content: str, chunk_id: int = None, title: str = "", url: str = "", source: str = ""):
-        """
-        格式化本地以及远程检索到的文档
-        Args:
-            content:
-            chunk_id:
-            title:
-            source:
-            url:
-
-        Returns:
-
-        """
+    def _format_doc(self, content: str, chunk_id: str = None, title: str = "", url: str = "", source: str = "", parent_id: str = None, item_name:str = ""):
         return {
             "content": content,
             "chunk_id": chunk_id,
             "title": title,
             "url": url,
-            "source": source
+            "source": source,
+            "parent_id": parent_id,
+            "item_name": item_name
         }
 
     def _refine_rank(self, user_query: str, rerank_outputs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -134,6 +152,7 @@ class RerankerNode(BaseNode):
         """
         if not rerank_outputs:
             return []
+
         # 1. 获取重排序模型
         try:
             rerank_client: FlagReranker = AIClients.get_bge_m3_rerank_client()
@@ -141,44 +160,190 @@ class RerankerNode(BaseNode):
             self.logger.error(f"获取BGE-M3-Reranker模型失败 原因:{str(e)}")
             return [{**d, "score": None} for d in rerank_outputs]
 
-        # 2. 构建Q->D的pair对
+        # 3. 构建Q->D的pair对,把设备名注入到文本开头,拉高参数表格的语义得分   标记
         query_doc_pairs = [(user_query, d.get('content')) for d in rerank_outputs]
+        query_doc_pairs = []
+        for d in rerank_outputs:
+            item_name = d.get('item_name', '')
+            content = d.get('content', '')
+            # 拼接格式："设备：xxx \n 内容：xxx"
+            enriched_content = f"【设备型号】{item_name}\n{content}" if item_name else content
+            query_doc_pairs.append((user_query, enriched_content))
 
         try:
-            # 3. 计算(注意：BGE-M3重排序模型计算出来的得分可以很大也可以很小(负无穷大,正无穷大))
+            # 4. 计算(注意：BGE-M3重排序模型计算出来的得分可以很大也可以很小(负无穷大,正无穷大))
             rerank_scores = rerank_client.compute_score(sentence_pairs=query_doc_pairs)
 
-            # 4.组合最终结果
+            # 5.组合最终结果
             doc_score = [{**d, "score": self._sigmoid(float(s))} for d, s in zip(rerank_outputs, rerank_scores)]
 
-            # 5. 排序
+            # 6. 排序
             sorted_doc_score = sorted(doc_score, key=lambda x: x['score'], reverse=True)
 
-            # 6. 返回
-            return sorted_doc_score
+            # 7. 阈值过滤
+            filtered_doc_score = [
+                doc for doc in sorted_doc_score
+                if doc['score'] > self.config.rerank_min_score_threshold
+            ]
+            self.logger.info(f"获取Reranker后满足条件的切片结果个数{len(filtered_doc_score)}")
+
+            # 8. 返回
+            return filtered_doc_score
         except Exception as e:
             self.logger.error(f"BGE-M3重排序模型计算分数失败 原因：{str(e)}")
             return [{**d, "score": None} for d in rerank_outputs]
+
+    def _convert_to_parent_chunks_post_rerank(self, reranked_child_docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        在重排和截断全部完成之后，用胜出的子切片去换取父切片原文。
+        """
+
+        local_docs = [d for d in reranked_child_docs if d.get('source') == 'local']
+        web_docs = [d for d in reranked_child_docs if d.get('source') == 'web']
+
+        # 建立 parent_id 到子切片(包含score)的映射，方便后面继承分数
+        parent_to_best_child = {}
+        for doc in local_docs:
+            pid = doc.get("parent_id")
+            if pid and pid not in parent_to_best_child:
+                parent_to_best_child[pid] = doc
+
+        # 提取 parent_id
+        parent_ids = list(parent_to_best_child.keys())
+
+        final_docs = []
+        final_docs.extend(web_docs)  # Web文档无父子概念，直接放行
+
+        if not parent_ids:
+            return final_docs
+
+        try:
+            milvus_client = StorageClients.get_milvus_client()
+            parent_collection = getattr(self.config, 'parent_chunks_collection', 'parent_chunks')
+
+            formatted_ids = ",".join([f"'{pid}'" for pid in parent_ids])
+            expr = f"chunk_id in [{formatted_ids}]"
+
+            self.logger.info(f"正在溯源，用 {len(local_docs)} 个子切片召回 {len(parent_ids)} 个唯一父切片...")
+            parent_results = milvus_client.query(
+                collection_name=parent_collection,
+                filter=expr,
+                output_fields=["chunk_id", "content", "title", "file_title", "item_name"]
+            )
+
+            # 组装完整的父切片，【关键：继承最高分子切片的分数和原始设备名】
+            for p_chunk in parent_results:
+                pid = p_chunk.get("chunk_id")
+                best_child = parent_to_best_child.get(pid, {})
+
+                # 清洗刚从数据库捞出来的父切片文本    标记
+                raw_content = p_chunk.get("content", "")
+                clean_content = re.sub(r'!\[.*?\]\(.*?\)', '', raw_content)
+                clean_content = re.sub(r'<img.*?>', '', clean_content)
+                clean_content = re.sub(r'\n+', '\n', clean_content).strip()
+
+                final_docs.append({
+                    "content": clean_content,
+                    "chunk_id": pid,
+                    "title": p_chunk.get("title", ""),
+                    "source": "local_parent",
+                    "item_name": p_chunk.get("item_name", "") or best_child.get("item_name", ""),
+                    "score": best_child.get("score", 0.0)
+                })
+
+            # 2. 必须重排一次，因为 Milvus 返回的 parent_results 是无序的
+            final_docs = sorted(final_docs, key=lambda x: x.get('score', 0), reverse=True)
+        except Exception as e:
+            self.logger.error(f"召回父切片失败，降级使用短子块: {e}")
+            final_docs.extend(local_docs)
+
+        return final_docs
+
+    def filter_reranked_docs_by_entity(self, reranked_docs: list[dict], confirmed_items: list[str],
+                                       rerank_min_top_k: int = 3, rerank_max_top_k: int = 8) -> list[dict]:
+        """
+        当存在多个设备对比时，对每个设备分别执行断崖截断，保证每个设备都有平等的、动态的上下文配额。
+        对于 Web 召回的结果，通过文本字面匹配将其归类到对应设备中。
+        """
+        if len(confirmed_items) <= 1:
+            # 单设备查询或未识别出设备：保持原有的全局断崖截断逻辑
+            self.logger.info(f"仅单设备查询，执行全局断崖截断")
+            return self._cliff_cutoff(reranked_docs, rerank_min_top_k, rerank_max_top_k)
+
+        self.logger.info(f"存在 {len(confirmed_items)} 个设备对比，对每个设备独立执行动态断崖截断")
+
+        # 1. 准备分桶 (保持原有的降序顺序)
+        item_buckets = {item: [] for item in confirmed_items}
+
+        # 2. 将文档发牌到对应的设备桶中
+        for doc in reranked_docs:
+            for item in confirmed_items:
+                # 1. 强元数据匹配：取自带的 item_name
+                doc_item = doc.get("item_name") or doc.get("metadata", {}).get("item_name")
+
+                # 2. 提取核心型号
+                item_parts = item.split()
+                model_candidate = max(item_parts, key=len) if item_parts else item
+
+                # 提取字母数字混合的核心前缀（忽略 - / 等符号）
+                # 比如把 HF46F-24-HS1 变成 HF46F
+                match = re.match(r'([A-Za-z]+[0-9]+[A-Za-z]*)', model_candidate)
+                core_model = match.group(1) if match else model_candidate[:5]  # 兜底取前5个字符
+
+                # 清理被检查文本中的常见分隔符，方便比对
+                clean_content = re.sub(r'[-/_\s]', '', doc.get("content", ""))
+                clean_core = re.sub(r'[-/_\s]', '', core_model)
+
+                # 3. 构建多重匹配条件（满足其一即可入桶）
+                cond_exact = (doc_item == item)
+                cond_full = (item in doc.get("content", "") or item in doc.get("title", ""))
+
+                # 只要核心型号长度>=4，且在清理掉符号的内容中能找到，就算命中
+                cond_core = (len(clean_core) >= 4 and clean_core in clean_content)
+
+                if cond_exact or cond_full or cond_core:
+                    item_buckets[item].append(doc)
+
+        # 3. 对每个桶独立执行断崖截断，并使用 dict 去重
+        # (因为一篇对比评测的 Web 文章可能同时进入了 A 桶和 B 桶，避免给 LLM 喂重复数据)
+        final_docs_dict = {}
+
+        for item, docs in item_buckets.items():
+            if not docs:
+                continue
+            # 因为原列表 reranked_docs 是按 score 降序的，所以分发到 bucket 里的 docs 也是天然降序的，可以直接断崖
+            self.logger.info(f"对设备 [{item}] 的 {len(docs)} 个候选文档进行截断:")
+            cutoff_docs = self._cliff_cutoff(docs, rerank_min_top_k, rerank_max_top_k)
+            for d in cutoff_docs:
+                final_docs_dict[id(d)] = d  # 用 Python 对象的内存地址作为唯一键，极其安全且防重
+
+
+        # 4. 组装并重新进行一次全局降序排序
+        final_docs = sorted(list(final_docs_dict.values()), key=lambda x: x.get('score', 0), reverse=True)
+
+        # 5. 哪怕每个产品都拿到了自己的配额，为了防止大模型超载，做一个硬上限控制,比如最多允许输入 10 个长切片（10000字左右）
+        safe_limit = self.config.final_rerank_max_top_k
+        if len(final_docs) > safe_limit:
+            self.logger.warning(f"触发全局截断机制：总切片数 {len(final_docs)} 超载，强制截断至 {safe_limit} 个")
+            final_docs = final_docs[:safe_limit]
+
+        self.logger.info(f"断崖阶段后的子切片的总个数{len(final_docs)}")
+
+        return final_docs
 
     def _cliff_cutoff(self, refine_docs: List[Dict[str, Any]], rerank_min_top_k: int, rerank_max_top_k: int) -> List[
         Dict[str, Any]]:
         """
           动态top_k: 文档分数归一化后只需一个断崖阈值(rerank_gap_threshold)
           从头开始寻找最大断崖点，再用 min_top_k 兜底，把最大断崖之前的文档保留下来
-
-          Args:
-              refine_docs: 排序后的文档列表
-              rerank_min_top_k: 最少保留文档数
-              rerank_max_top_k: 最多保留文档数
         """
-
         upper_bound = min(rerank_max_top_k, len(refine_docs))
         lower_bound = min(rerank_min_top_k, upper_bound)
         cut_off = upper_bound
         max_gap = 0
 
         # 从第0个间隔开始遍历，找全局最大断崖
-        for i in range(0, upper_bound - 1):
+        for i in range(lower_bound - 1, upper_bound - 1):
             current_score = refine_docs[i].get('score')
             next_score = refine_docs[i + 1].get('score')
 
@@ -190,13 +355,15 @@ class RerankerNode(BaseNode):
             if gap >= self.config.rerank_gap_threshold and gap > max_gap:
                 max_gap = gap
                 cut_off = i + 1
-                self.logger.info(f"位置{i + 1}发生断崖")
+                self.logger.info(f"位置{i + 1}发生最大断崖，断崖差值: {gap:.4f}")
+                if gap >= self.config.rerank_max_gap:
+                    break
 
         # 兜底：不管断崖在哪，至少保留 lower_bound 个
         cut_off = max(cut_off, lower_bound)
 
         cutoff_docs = refine_docs[:cut_off]
-
+        self.logger.info(f"断崖阶段后的子切片个数{len(cutoff_docs)}")
         return cutoff_docs
 
 if __name__ == "__main__":

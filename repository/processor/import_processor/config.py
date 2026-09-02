@@ -17,12 +17,13 @@ class ImportConfig:
     """导入流程配置"""
 
     # ==================== 文档处理配置 ====================
-    max_content_length: int = 2000  # 切片最大长度
+    parent_max_content_length: int = 800  # 父切片最大长度
+    parent_min_content_length: int = 100  # 父切片合并短内容的最小长度
+    child_chunk_size: int = 200 # 子切片长度
+    child_chunk_overlap: int = 30 # 子切片重叠字符数
     img_content_length: int = 200  # 图片上下文最大长度
-    min_content_length: int = 500  # 合并短内容的最小长度
-    overlap_sentences: int = 1  # 句子级切分时的重叠句数
-    item_name_chunk_k: int = 3  # 商品名识别时使用的切片数量
-    item_name_chunk_size: int = 2500  # 商品名识别时使用的切片内容长度
+    item_name_chunk_k: int = 3  # 产品名识别时使用的切片数量
+    item_name_chunk_size: int = 1500  # 产品名识别时使用的切片内容长度
 
     image_extensions: Set[str] = field(
         default_factory=lambda: {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
@@ -49,8 +50,11 @@ class ImportConfig:
     milvus_url: str = field(
         default_factory=lambda: os.getenv("MILVUS_URL", "")
     )
-    chunks_collection: str = field(
-        default_factory=lambda: os.getenv("CHUNKS_COLLECTION", "")
+    child_chunks_collection: str = field(
+        default_factory=lambda: os.getenv("CHILD_CHUNKS_COLLECTION", "")
+    )
+    parent_chunks_collection: str = field(
+        default_factory=lambda: os.getenv("PARENT_CHUNKS_COLLECTION", "")
     )
     item_name_collection: str = field(
         default_factory=lambda: os.getenv("ITEM_NAME_COLLECTION", "")

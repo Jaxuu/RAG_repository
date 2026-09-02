@@ -130,7 +130,18 @@ def execute_hybrid_search_query(milvus_client: MilvusClient,
         raise RuntimeError(f"执行Milvus混合搜索失败 (collection={collection_name}): {e}") from e
 
 
-def _item_names_filter(item_names: List[str]) -> Tuple[str, Dict[str, Any]]:
+def _item_names_filter(item_names: List[str], query_type: str = "fuzzy") -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """
+    根据查询类型智能生成 Milvus 过滤表达式。
+    """
+    # 如果是模糊选型 (Fuzzy)，完全放开过滤约束
+    # 理由：拼接词（如“明纬 350导轨电源”）无法用 IN 或 LIKE 匹配官方长型号。
+    # 必须把过滤条件置空，全权交给 BGE-M3 的语义和 BM25 词频去打分。
+    if not item_names or query_type == "fuzzy":
+        return None, None
+
+    # 如果是精准查询 (Precise)，此时 item_names 里是 Aligner 对齐后的纯正官方型号
+    # 毫无顾忌地使用 IN 语法，实现 100% 精确拦截
     expr = "item_name in {item_names}"
     expr_params = {"item_names": item_names}
     return expr, expr_params

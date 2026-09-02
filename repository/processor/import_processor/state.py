@@ -52,11 +52,15 @@ class ImportGraphState(TypedDict, total=False):
 
     item_name: str  # 识别出的商品/产品名称(方便程序员用)
 
+    item_features: dict #识别出的商品/产品信息
+
     # ==================== 处理中间数据 ====================
 
     md_content: str  # Markdown 文档内容
 
-    chunks: List  # 文档切片列表
+    parent_chunks: List # 父切片
+
+    child_chunks: List  # 子切片
 
     # ==================== 默认状态 ====================
 
@@ -83,10 +87,13 @@ GRAPH_DEFAULT_STATE: ImportGraphState = {
 
     "md_content": "",
 
-    "chunks": [],
+    "parent_chunks": [],
+
+    "child_chunks": [],
 
     "item_name": "",
 
+    "item_features": ""
 }
 
 
