@@ -7,27 +7,32 @@ class RrfMergeNode(BaseNode):
 
     name = "rrf_merge_node"
     def process(self, state: QueryGraphState) -> QueryGraphState:
-        # 1. 获取本地检索的两路结果
+        # 1. 获取本地检索的三路结果
         embedding_chunks = state.get('embedding_chunks') or []
         hyde_embedding_chunks = state.get('hyde_embedding_chunks') or []
+        kg_search_chunks = state.get('kg_search_chunks') or []
 
-        # 2. 定义两路检索结果和对应路的权重映射表,rrf计算得分中影响因子最大的是并不是weight这个系数，而是k.
+        # 2. 定义三路检索结果和对应路的权重映射表,rrf计算得分中影响因子最大的是并不是weight这个系数，而是k.
         #    动态路由：precise和fuzzy查询权重不同
         if state.get('query_type') == 'precise':
             self.logger.error(f"具体型号精确搜索，rrf偏向于hybrid")
             hybrid_search_weight = self.config.rrf_hybrid_search_weight_precise
             hyde_search_weight = self.config.rrf_hyde_search_weight_precise
+            kg_search_weight = self.config.rrf_kg_search_weight_precise
         elif state.get('query_type') == 'fuzzy':
             self.logger.error(f"无具体型号模糊搜索，rrf偏向于hyde")
             hybrid_search_weight = self.config.rrf_hybrid_search_weight_fuzzy
             hyde_search_weight = self.config.rrf_hyde_search_weight_fuzzy
+            kg_search_weight = self.config.rrf_kg_search_weight_fuzzy
         else:
             hybrid_search_weight = 1
             hyde_search_weight = 1
+            kg_search_weight = 1
 
         search_result_weight = {
             "embedding_search_chunks": (self._validate_search_result(embedding_chunks), hybrid_search_weight),
             "hyde_embedding_search_chunks": (self._validate_search_result(hyde_embedding_chunks), hyde_search_weight),
+            "kg_search_chunks": (self._validate_search_result(kg_search_chunks), kg_search_weight),
         }
 
         # 3. 收集映射表中的搜索结果和权重

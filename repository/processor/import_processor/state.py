@@ -54,6 +54,8 @@ class ImportGraphState(TypedDict, total=False):
 
     item_features: dict #识别出的商品/产品信息
 
+    kg_triplets: dict  # 提取的图谱三元组
+
     # ==================== 处理中间数据 ====================
 
     md_content: str  # Markdown 文档内容
@@ -93,7 +95,9 @@ GRAPH_DEFAULT_STATE: ImportGraphState = {
 
     "item_name": "",
 
-    "item_features": ""
+    "item_features": {},
+
+    "kg_triplets": {}  # 提取的图谱三元组
 }
 
 

@@ -17,8 +17,8 @@ class ImportConfig:
     """导入流程配置"""
 
     # ==================== 文档处理配置 ====================
-    parent_max_content_length: int = 800  # 父切片最大长度
-    parent_min_content_length: int = 100  # 父切片合并短内容的最小长度
+    parent_max_content_length: int = 600  # 父切片最大长度
+    parent_min_content_length: int = 50  # 父切片合并短内容的最小长度
     child_chunk_size: int = 200 # 子切片长度
     child_chunk_overlap: int = 30 # 子切片重叠字符数
     img_content_length: int = 200  # 图片上下文最大长度

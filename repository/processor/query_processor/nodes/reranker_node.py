@@ -7,7 +7,6 @@ from repository.processor.query_processor.state import QueryGraphState
 from repository.utils.client.ai_clients import AIClients
 from repository.utils.client.storage_clients import StorageClients
 
-
 class RerankerNode(BaseNode):
     name = "reranker_node"
 
@@ -93,13 +92,14 @@ class RerankerNode(BaseNode):
             chunk_id = chunk.get('chunk_id')
             parent_id = chunk.get('parent_id')
             item_name = chunk.get('item_name', '')
+            source = chunk.get('source', 'local')
 
             # 3. 格式化文档(格式化本地)
             formated_local_doc = self._format_doc(
                 content=content,
                 chunk_id=chunk_id,
                 title=title,
-                source="local",
+                source=source,
                 parent_id=parent_id,  # 传入 parent_id
                 item_name=item_name
             )
@@ -199,7 +199,7 @@ class RerankerNode(BaseNode):
         """
 
         local_docs = [d for d in reranked_child_docs if d.get('source') == 'local']
-        web_docs = [d for d in reranked_child_docs if d.get('source') == 'web']
+        pass_through_docs = [d for d in reranked_child_docs if d.get('source') in ['web', 'knowledge_graph']]
 
         # 建立 parent_id 到子切片(包含score)的映射，方便后面继承分数
         parent_to_best_child = {}
@@ -212,7 +212,7 @@ class RerankerNode(BaseNode):
         parent_ids = list(parent_to_best_child.keys())
 
         final_docs = []
-        final_docs.extend(web_docs)  # Web文档无父子概念，直接放行
+        final_docs.extend(pass_through_docs)  # Web文档无父子概念，直接放行
 
         if not parent_ids:
             return final_docs

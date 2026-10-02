@@ -1,5 +1,5 @@
 """
-学生管理小程序 —— 演示 PyMongo 的完整 CRUD 操作
+学生管理小程序 —— PyMongo 的完整 CRUD 操作
 """
 from pymongo import MongoClient
 

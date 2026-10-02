@@ -20,6 +20,7 @@ from repository.processor.import_processor.nodes.entry_node import EntryNode
 from repository.processor.import_processor.nodes.md_to_img_node import MarkDownToImgNode
 from repository.processor.import_processor.nodes.document_split_node import DocumentSplitNode
 from repository.processor.import_processor.nodes.item_name_recognition_node import ItemNameRecognitionNode
+from repository.processor.import_processor.nodes.kg_extraction_node import KgExtractionNode
 from repository.processor.import_processor.nodes.embedding_chunks_node import EmbeddingChunksNode
 from repository.processor.import_processor.nodes.import_milvus_node import ImportMilvusNode
 
@@ -62,6 +63,7 @@ def import_graph() -> CompiledStateGraph:
         "md_to_img_node": MarkDownToImgNode(),
         "document_split_node": DocumentSplitNode(),
         "item_name_recognition_node": ItemNameRecognitionNode(),
+        "kg_extraction_node": KgExtractionNode(),
         "embedding_chunks_node": EmbeddingChunksNode(),
         "import_milvus_node": ImportMilvusNode()
     }
@@ -83,7 +85,8 @@ def import_graph() -> CompiledStateGraph:
     work_flow.add_edge("md_to_img_node", END)
     work_flow.add_edge("md_to_img_node", "document_split_node")
     work_flow.add_edge("document_split_node", "item_name_recognition_node")
-    work_flow.add_edge("item_name_recognition_node", "embedding_chunks_node")
+    work_flow.add_edge("item_name_recognition_node", "kg_extraction_node")
+    work_flow.add_edge("kg_extraction_node", "embedding_chunks_node")
     work_flow.add_edge("embedding_chunks_node", "import_milvus_node")
     work_flow.add_edge("import_milvus_node", END)
 

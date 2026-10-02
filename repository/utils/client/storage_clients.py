@@ -9,6 +9,7 @@ from minio import Minio
 from pymilvus import MilvusClient
 from pymongo import MongoClient
 from pymongo.database import Database
+from neo4j import GraphDatabase
 from dotenv import load_dotenv
 from repository.utils.client.base import BaseClientManager
 
@@ -16,7 +17,7 @@ load_dotenv()
 
 
 class StorageClients(BaseClientManager):
-    """存储类客户端：MinIO、Milvus"""
+    """存储类客户端：MinIO、Milvus、MongoDB、Neo4j"""
 
     _minio_client: Optional[Minio] = None
     _minio_lock = threading.Lock()
@@ -26,6 +27,10 @@ class StorageClients(BaseClientManager):
 
     _mongo_db: Optional[Database] = None
     _mongo_lock = threading.Lock()
+
+    _neo4j_client: Optional[GraphDatabase] = None
+    _neo4j_lock = threading.Lock()
+
 
 
     # ── MinIO ──
@@ -110,6 +115,29 @@ class StorageClients(BaseClientManager):
             logger.error(f"MongoDB 客户端创建失败: {e}")
             raise ConnectionError(f"MongoDB 连接失败: {e}") from e
 
+    # ── Neo4j ──
+    @classmethod
+    def get_neo4j_client(cls) -> GraphDatabase:
+        return cls._get_or_create("_neo4j_client", cls._neo4j_lock, cls._create_neo4j_client)
+
+    @classmethod
+    def _create_neo4j_client(cls) -> GraphDatabase:
+        try:
+
+            neo4j_url = cls._require_env('NEO4J_URL')
+            neo4j_user = cls._require_env('NEO4J_USER')
+            neo4j_password = cls._require_env('NEO4J_PASSWORD')
+            neo4j_client = GraphDatabase.driver(neo4j_url, auth=(neo4j_user, neo4j_password), encrypted=False)
+
+            return neo4j_client
+
+        except EnvironmentError:
+            raise
+        except Exception as e:
+            logger.error(f"Neo4j 客户端创建失败: {e}")
+            raise ConnectionError(f"Neo4j 连接失败: {e}") from e
+
+
 
 if __name__ == '__main__':
-    print(StorageClients.get_milvus_client())
+    print(StorageClients.get_neo4j_client())

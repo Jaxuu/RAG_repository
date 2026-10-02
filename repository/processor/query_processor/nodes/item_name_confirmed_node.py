@@ -153,7 +153,7 @@ class _ItemNameAligner:
         return final_search_result
 
     def _align(self, search_result: List[Dict[str, Any]]) -> List[str]:
-        """【顺延占位版】：遍历所有的搜索结果，遇到碰撞自动顺延取 Top2/Top3"""
+        """遍历所有的搜索结果，遇到碰撞自动顺延取 Top2/Top3"""
         confirmed = []
         # 兼容旧配置并引入新的单一置信度
         confidence_threshold = self._config.item_name_confidence
@@ -205,7 +205,7 @@ class ItemNameConfirmedNode(BaseNode):
         item_names = llm_result.get('item_names', [])
         rewritten_query = llm_result.get('rewritten_query')
 
-        # 【新增过滤】：只有包含 model 的产品，才会被装填进向量检索列表
+        # 只有包含 model 的产品，才会被装填进向量检索列表
         search_item_names = []
         for p in products:
             if p.get('model'):
@@ -222,7 +222,7 @@ class ItemNameConfirmedNode(BaseNode):
         else:
             confirmed = []
 
-        # 核心决策分发（去除了 options 参数）
+        # 核心决策分发
         self._decide(confirmed, state, rewritten_query, item_names, is_relevant, products)
 
         state['history'] = history_context

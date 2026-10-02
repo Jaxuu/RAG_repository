@@ -28,12 +28,12 @@ class DocumentSplitNode(BaseNode):
         sections: List[Dict[str, Any]] = self._split_by_headings(md_content, file_title)
 
         # 3. 组装父块：进行长短合并，并生成“父块 (Parent Chunks)”
-        # 这里的 final_section 依然是你原本最高质量的 1000 字大块
+        # 这里的 final_section 依然是原本高质量的 800 字大块
         final_section = self._split_and_merge(sections, max_content_length, min_content_length)
         parent_chunks = self._assemble_parent_chunks(final_section)
 
-        # 4. 【新增】裂变子块：将父块切碎为用于精准检索的“子块 (Child Chunks)”
-        # 假设我们设定子块大小为 250 字符，重叠 30 字符
+        # 4. 裂变子块：将父块切碎为用于精准检索的“子块 (Child Chunks)”
+        # 假设子块大小为 200 字符，重叠 30 字符
         child_chunks = self._generate_child_chunks(parent_chunks, config.child_chunk_size, config.child_chunk_overlap)
 
         # 5. 备份(观察父子结构)
@@ -304,7 +304,7 @@ class DocumentSplitNode(BaseNode):
             body = section.get('body')
             title = section.get('title')
 
-            # 【关键新增】：生成父块的唯一主键
+            # 生成父块的唯一主键
             parent_id = str(uuid.uuid4())
 
             content = f"{title}\n\n{body}"

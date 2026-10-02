@@ -57,12 +57,26 @@ import os
 import json
 import asyncio
 import threading
+import time  # 【新增】用于统计耗时
 from typing import List
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 from datasets import Dataset
 from ragas import evaluate
+
+# 【新增】Token 计算工具
+try:
+    import tiktoken
+
+    _tokenizer = tiktoken.get_encoding("cl100k_base")
+
+
+    def count_tokens(text: str) -> int:
+        return len(_tokenizer.encode(text))
+except ImportError:
+    def count_tokens(text: str) -> int:
+        return len(text) // 3  # 未安装 tiktoken 时的中文字符粗略估算兜底
 
 try:
     from ragas.run_config import RunConfig
@@ -82,7 +96,8 @@ from repository.processor.query_processor.main_graph import query_app
 load_dotenv(override=True)
 
 API_KEY = os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY", "")
-BASE_URL = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+BASE_URL = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE",
+                                                     "https://dashscope.aliyuncs.com/compatible-mode/v1")
 BGE_M3_PATH = os.getenv("BGE_M3_PATH", "BAAI/bge-m3")
 BGE_DEVICE = os.getenv("BGE_DEVICE", "cuda:0")
 
@@ -93,13 +108,13 @@ judge_chat_model = ChatOpenAI(
     base_url=BASE_URL,
     temperature=0.0,
     max_retries=5,
-    timeout=180.0,  # 延长超时时间
+    timeout=180.0,
     model_kwargs={"response_format": {"type": "json_object"}}
 )
 judge_llm = LangchainLLMWrapper(judge_chat_model)
 
 
-# 线程安全 BGE-M3 包装器：彻底解决 Windows/CUDA 在 asyncio 线程池中的资源竞争与死锁
+# 线程安全 BGE-M3 包装器
 class ThreadSafeBgeEmbeddings(Embeddings):
     def __init__(self, raw_embeddings: Embeddings):
         self._raw = raw_embeddings
@@ -138,9 +153,9 @@ try:
         LLMContextPrecisionWithReference,
         LLMContextRecall
     )
+
     eval_metrics = [
         Faithfulness(llm=judge_llm),
-        # 增加 strictness=1 参数，强制 n=1，绕过 API 限制
         AnswerRelevancy(llm=judge_llm, embeddings=judge_embeddings, strictness=1),
         LLMContextPrecisionWithReference(llm=judge_llm),
         LLMContextRecall(llm=judge_llm)
@@ -152,16 +167,17 @@ except ImportError:
         LLMContextPrecisionWithReference,
         LLMContextRecall
     )
+
     eval_metrics = [
         Faithfulness(llm=judge_llm),
-        # 这里的异常捕获分支也同步加上 strictness=1
         AnswerRelevancy(llm=judge_llm, embeddings=judge_embeddings, strictness=1),
         LLMContextPrecisionWithReference(llm=judge_llm),
         LLMContextRecall(llm=judge_llm)
     ]
 
+
 # ==================== 4. 数据采集 ====================
-def collect_rag_samples(test_cases_path: str) -> Dataset:
+def collect_rag_samples(test_cases_path: str):  # 【修改】去除强类型 Dataset 返回标注，因为我们增加了返回值
     if not os.path.exists(test_cases_path):
         raise FileNotFoundError(f"未找到测试集文件: {test_cases_path}")
 
@@ -173,6 +189,10 @@ def collect_rag_samples(test_cases_path: str) -> Dataset:
     responses = []
     retrieved_contexts = []
 
+    # 【新增】性能追踪列表
+    context_tokens_list = []
+    response_times_list = []
+
     print(f"🚀 开始采集评测数据，共 {len(test_cases)} 组测试用例...")
 
     for idx, item in enumerate(test_cases, 1):
@@ -180,12 +200,20 @@ def collect_rag_samples(test_cases_path: str) -> Dataset:
         ref = item["reference"]
         print(f"[{idx}/{len(test_cases)}] 正在执行查询: {query[:30]}...")
 
+        # 【新增】开始计时
+        start_time = time.time()
+
         state = query_app.invoke({
             "original_query": query,
-            "session_id": f"eval-session-{idx}",  # 每次评测独立隔离，杜绝历史串扰
+            "session_id": f"eval-session-{idx}",
             "task_id": f"eval-task-{idx}",
             "is_stream": False
         })
+
+        # 【新增】结束计时与耗时计算
+        end_time = time.time()
+        latency = end_time - start_time
+        response_times_list.append(latency)
 
         retrieved_docs = [
             chunk.get("content", "")
@@ -193,12 +221,17 @@ def collect_rag_samples(test_cases_path: str) -> Dataset:
             if chunk.get("content")
         ]
 
+        # 【新增】计算检索上下文的 Token 数量
+        combined_context = "\n\n".join(retrieved_docs)
+        ctx_tokens = count_tokens(combined_context)
+        context_tokens_list.append(ctx_tokens)
+
         user_inputs.append(query)
         references.append(ref)
         responses.append(state.get("answer", ""))
         retrieved_contexts.append(retrieved_docs)
 
-    return Dataset.from_dict({
+    dataset = Dataset.from_dict({
         "user_input": user_inputs,
         "question": user_inputs,
         "retrieved_contexts": retrieved_contexts,
@@ -208,6 +241,9 @@ def collect_rag_samples(test_cases_path: str) -> Dataset:
         "reference": references,
         "ground_truth": references
     })
+
+    # 【修改】多返回两个性能指标列表
+    return dataset, context_tokens_list, response_times_list
 
 
 # ==================== 5. 纯表格与 JSON 数据结果保存 ====================
@@ -222,12 +258,24 @@ def save_evaluation_results(df: pd.DataFrame, output_dir: str):
     # 均值计算
     avg_scores = df[metric_cols].mean(numeric_only=True).fillna(0.0).to_dict()
 
-    # 1. 导出 summary.json
+    # 【新增】计算新增的工程性能指标 (P50, P95, Avg, P99)
+    perf_metrics = {
+        "context_tokens_avg": round(df['context_tokens'].mean(), 1),
+        "context_tokens_p95": round(df['context_tokens'].quantile(0.95), 1),
+        "context_tokens_p99": round(df['context_tokens'].quantile(0.99), 1),
+        "response_time_avg": round(df['response_time'].mean(), 3),
+        "response_time_p50": round(df['response_time'].quantile(0.50), 3),
+        "response_time_p95": round(df['response_time'].quantile(0.95), 3),
+        "response_time_p99": round(df['response_time'].quantile(0.99), 3),
+    }
+
+    # 1. 导出 summary.json (将性能指标一并写入)
     summary_path = os.path.join(output_dir, "ragas_summary.json")
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump({
             "total_samples": len(df),
-            "average_scores": {k: round(float(v), 4) for k, v in avg_scores.items()}
+            "average_scores": {k: round(float(v), 4) for k, v in avg_scores.items()},
+            "performance_metrics": perf_metrics  # 【新增】
         }, f, ensure_ascii=False, indent=2)
 
     # 2. 追加 [GLOBAL_AVERAGE_SUMMARY] 汇总行并保存 CSV 明细
@@ -235,6 +283,10 @@ def save_evaluation_results(df: pd.DataFrame, output_dir: str):
     avg_row['user_input'] = "[GLOBAL_AVERAGE_SUMMARY]"
     for col in metric_cols:
         avg_row[col] = round(float(avg_scores.get(col, 0.0)), 4)
+
+    # 【新增】把均值也写进 CSV 的汇总行里直观展示
+    avg_row['context_tokens'] = perf_metrics["context_tokens_avg"]
+    avg_row['response_time'] = perf_metrics["response_time_avg"]
 
     df_with_avg = pd.concat([df, pd.DataFrame([avg_row])], ignore_index=True)
     report_csv_path = os.path.join(output_dir, "ragas_evaluation_report.csv")
@@ -247,10 +299,11 @@ def save_evaluation_results(df: pd.DataFrame, output_dir: str):
 # ==================== 6. 主执行入口 ====================
 def main():
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    json_file_name = os.getenv("RAGAS_TESTSET", "test_cases_temp.json")
+    json_file_name = os.getenv("RAGAS_TESTSET", "test_cases_benchmark.json")
     test_cases_path = os.path.join(current_dir, json_file_name)
 
-    dataset = collect_rag_samples(test_cases_path)
+    # 接收新增的性能列表
+    dataset, context_tokens_list, response_times_list = collect_rag_samples(test_cases_path)
 
     print("\n🔍 正在调用 Judge LLM 与本地 BGE-M3 计算得分...")
 
@@ -264,7 +317,7 @@ def main():
     if RunConfig is not None:
         eval_kwargs["run_config"] = RunConfig(
             max_workers=2,
-            timeout=300,   # 延长超时阈值，兼容多用例大并发
+            timeout=300,
             max_retries=5,
             max_wait=60
         )
@@ -276,6 +329,11 @@ def main():
     print("============================================================")
 
     df = results.to_pandas()
+
+    # 【新增】将两列性能数据挂载到最终生成的 DataFrame 中
+    df['context_tokens'] = context_tokens_list
+    df['response_time'] = response_times_list
+
     save_evaluation_results(df, current_dir)
 
 

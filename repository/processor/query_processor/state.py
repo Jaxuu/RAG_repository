@@ -19,6 +19,7 @@ class QueryGraphState(TypedDict):
     original_query: str # 原始查询
     embedding_chunks: list # 已向量化的切片
     hyde_embedding_chunks: list # 已向量化的假设性问题切片
+    kg_search_chunks: list  # 图谱召回的切片
     rrf_chunks: list # rrf排序后的切片
     web_search_docs: list # 搜索结果
     reranked_docs: list  # 排序后的文档
@@ -35,11 +36,12 @@ class QueryGraphState(TypedDict):
 
 DEFAULT_STATE: QueryGraphState = {
     "session_id": "",               # 会话ID
-    "task_id": "",               # 任务ID
+    "task_id": "",                  # 任务ID
     "message_id": "",               # 消息ID
     "original_query": "",           # 原始查询
     "embedding_chunks": [],         # 已向量化的切片
     "hyde_embedding_chunks": [],    # 已向量化的假设性问题切片
+    "kg_search_chunks": [],         # 图谱召回的切片
     "rrf_chunks": [],               # rrf排序后的切片
     "web_search_docs": [],          # 搜索结果
     "reranked_docs": [],            # 排序后的文档
@@ -49,7 +51,7 @@ DEFAULT_STATE: QueryGraphState = {
     "rewritten_query": "",          # 重写查询
     "history": [],                  # 历史对话
     "is_stream": False,             # 是否流式输出 (默认设为 False)
-    "query_type": ""                # 路由
+    "query_type": "",               # 路由
 }
 
 def create_default_state(**overrides) -> QueryGraphState:

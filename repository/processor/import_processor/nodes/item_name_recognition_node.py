@@ -182,7 +182,6 @@ class ItemNameRecognitionNode(BaseNode):
         self.logger.info(f"插入的结果:{inserted_result},主键值:{inserted_result.get('ids')}")
 
     def _create_item_name_collection(self, item_name_collection_name: str, milvus_client: MilvusClient):
-        # (代码保持不变)
         schema = milvus_client.create_schema()
         schema.add_field(field_name="pk", datatype=DataType.VARCHAR, is_primary=True, auto_id=True, max_length=10)
 

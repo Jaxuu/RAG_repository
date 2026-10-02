@@ -10,6 +10,7 @@ from repository.processor.query_processor.state import QueryGraphState
 from query_processor.nodes.item_name_confirmed_node import ItemNameConfirmedNode
 from query_processor.nodes.hybrid_vector_search_node import HybridVectorSearchNode
 from query_processor.nodes.hyde_vector_search_node import HyDeVectorSearchNode
+from query_processor.nodes.kg_search_node import KgSearchNode
 from query_processor.nodes.web_mcp_search_node import WebMcpSearchNode
 from query_processor.nodes.rrf_merge_node import RrfMergeNode
 from query_processor.nodes.reranker_node import RerankerNode
@@ -84,6 +85,7 @@ def create_query_graph() -> CompiledStateGraph:
         "multi_search": lambda x: x,  # 虚拟节点
         "hybrid_vector_search_node": HybridVectorSearchNode(),
         "hyde_vector_search_node": HyDeVectorSearchNode(),
+        "kg_search_node": KgSearchNode(),
         "web_mcp_search_node": WebMcpSearchNode(),
         "join": lambda x: {},  # 多路搜索汇合（虚节点）
         "rrf_merge_node": RrfMergeNode(),
@@ -112,12 +114,14 @@ def create_query_graph() -> CompiledStateGraph:
     # 6. 多路搜索分发（并行执行）
     workflow.add_edge("multi_search", "hybrid_vector_search_node")
     workflow.add_edge("multi_search", "hyde_vector_search_node")
+    workflow.add_edge("multi_search", "kg_search_node")
     workflow.add_edge("multi_search", "web_mcp_search_node")
 
     # TODO 用方法实现汇和
     # 7. 多路搜索汇合
     workflow.add_edge("hybrid_vector_search_node", "join")
     workflow.add_edge("hyde_vector_search_node", "join")
+    workflow.add_edge("kg_search_node", "join")
     workflow.add_edge("web_mcp_search_node", "join")
 
     # 8. 顺序边
