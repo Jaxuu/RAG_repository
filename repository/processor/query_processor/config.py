@@ -56,18 +56,19 @@ class QueryConfig:
     rrf_hyde_search_weight_precise: float = field(
         default_factory=lambda: float(os.getenv("RRF_HYDE_SEARCH_WEIGHT_PRECISE", "0.4"))
     )
-    rrf_kg_search_weight_fuzzy: float = field(
-        default_factory=lambda: float(os.getenv("RRF_KG_SEARCH_WEIGHT_FUZZY", "5.0"))
+    rrf_kg_search_weight_precise: float = field(
+        default_factory=lambda: float(os.getenv("RRF_KG_SEARCH_WEIGHT_PRECISE", "5.0"))
     )
     rrf_hybrid_search_weight_fuzzy: float = field(
-        default_factory=lambda: float(os.getenv("RRF_HYBRID_SEARCH_WEIGHT_FUZZY", "0.5"))
+        default_factory=lambda: float(os.getenv("RRF_HYBRID_SEARCH_WEIGHT_FUZZY", "1.0"))
     )
     rrf_hyde_search_weight_fuzzy: float = field(
-        default_factory=lambda: float(os.getenv("RRF_HYDE_SEARCH_WEIGHT_FUZZY", "0.5"))
+        default_factory=lambda: float(os.getenv("RRF_HYDE_SEARCH_WEIGHT_FUZZY", "1.0"))
     )
-    rrf_kg_search_weight_precise: float = field(
-        default_factory=lambda: float(os.getenv("RRF_KG_SEARCH_WEIGHT_PRECISE", "0.5"))
+    rrf_kg_search_weight_fuzzy: float = field(
+        default_factory=lambda: float(os.getenv("RRF_KG_SEARCH_WEIGHT_FUZZY", "0.5"))
     )
+
 
     # ==================== Web检索配置 ====================
     web_search_limit: int = field(

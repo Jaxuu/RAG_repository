@@ -161,7 +161,6 @@ class RerankerNode(BaseNode):
             return [{**d, "score": None} for d in rerank_outputs]
 
         # 3. 构建Q->D的pair对,把设备名注入到文本开头,拉高参数表格的语义得分   标记
-        query_doc_pairs = [(user_query, d.get('content')) for d in rerank_outputs]
         query_doc_pairs = []
         for d in rerank_outputs:
             item_name = d.get('item_name', '')

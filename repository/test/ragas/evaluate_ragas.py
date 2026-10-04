@@ -111,6 +111,7 @@ judge_chat_model = ChatOpenAI(
     timeout=180.0,
     model_kwargs={"response_format": {"type": "json_object"}}
 )
+
 judge_llm = LangchainLLMWrapper(judge_chat_model)
 
 

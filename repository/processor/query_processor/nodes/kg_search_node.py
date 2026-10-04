@@ -42,9 +42,9 @@ class KgSearchNode(BaseNode):
             "entity": {
                 "chunk_id": f"kg_{uuid.uuid4().hex[:8]}",
                 "content": chunk_content,
-                "title": "知识图谱精准解答",
+                "title": "knowledge_graph_answer",
                 "source": "knowledge_graph",
-                "item_name": "图谱多跳聚合结果",
+                "item_name": ' '.join(state['item_names']),
                 "parent_id": None
             }
         }
@@ -105,7 +105,7 @@ class KgSearchNode(BaseNode):
                 SystemMessage(content=sys_prompt),
                 HumanMessage(content=user_prompt)
             ])
-            return "【知识图谱精准检索结果】\n" + response.content.strip()
+            return response.content.strip()
         except Exception as e:
             self.logger.error(f"图谱结果文本化翻译失败，降级返回 JSON 字符串: {e}")
-            return f"【知识图谱原始数据】\n{kg_results}"
+            return f"{kg_results}"
